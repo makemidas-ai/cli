@@ -16,6 +16,13 @@
     "codex"
   ],
   "homepage": "https://makemidas.com/developers",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/makemidas-ai/cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/makemidas-ai/cli/issues"
+  },
   "license": "MIT",
   "type": "module",
   "bin": {

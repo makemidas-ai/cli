@@ -1,0 +1,40 @@
+{
+  "name": "makemidas",
+  "version": "0.1.0",
+  "description": "AI image and video generation from the terminal and for AI agents: Nano Banana, GPT Image, Seedream, Seedance, Kling, Veo and more through MakeMidas.",
+  "keywords": [
+    "ai-image-generator",
+    "ai-video-generator",
+    "text-to-image",
+    "text-to-video",
+    "image-to-video",
+    "cli",
+    "ai-agent",
+    "agent-skill",
+    "claude-code",
+    "cursor",
+    "codex"
+  ],
+  "homepage": "https://makemidas.com/developers",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "makemidas": "dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/cli.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/*.test.ts",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "^5.9.0"
+  }
+}

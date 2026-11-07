@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.1';
 export const USER_AGENT = `makemidas-cli/${VERSION}`;
 export const DEFAULT_BASE_URL = 'https://makemidas.com';
 

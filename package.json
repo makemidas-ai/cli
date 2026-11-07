@@ -1,6 +1,6 @@
 {
   "name": "@makemidas/cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AI image and video generation CLI for AI agents (Claude Code, Cursor, Codex) and people: Nano Banana, GPT Image, Seedream, Seedance, Kling, Veo and more through MakeMidas.",
   "keywords": [
     "ai-image-generator",

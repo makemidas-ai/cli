@@ -1,5 +1,5 @@
 {
-  "name": "makemidas",
+  "name": "@makemidas/cli",
   "version": "0.1.0",
   "description": "AI image and video generation from the terminal and for AI agents: Nano Banana, GPT Image, Seedream, Seedance, Kling, Veo and more through MakeMidas.",
   "keywords": [

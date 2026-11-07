@@ -7,7 +7,7 @@ Coding agents (Claude Code, Codex, Cursor, Gemini CLI) run it like any other
 command; the agent skill teaches them the options.
 
 ```bash
-npm i -g makemidas            # or: npx makemidas …
+npm i -g @makemidas/cli       # or: npx @makemidas/cli …
 makemidas auth login          # opens the browser once
 makemidas image "a lighthouse at dawn, film photo" --aspect 16:9
 makemidas video "the waves roll in" --ref lighthouse.png --duration 5

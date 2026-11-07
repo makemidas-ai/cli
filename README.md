@@ -1,10 +1,13 @@
-# makemidas
+# MakeMidas CLI: AI image and video generation for AI agents
 
-AI image and video generation from the terminal, for people and AI agents.
-Nano Banana, GPT Image, Seedream, Flux, Seedance, Kling, Veo, Wan and more
-through [MakeMidas](https://makemidas.com), paid with your MakeMidas credits.
-Coding agents (Claude Code, Codex, Cursor, Gemini CLI) run it like any other
-command; the agent skill teaches them the options.
+An AI image and video generation CLI for Claude Code, Cursor, Codex, Gemini
+CLI, OpenClaw and people at a terminal. One command reaches Nano Banana, GPT
+Image, Seedream, Flux, Seedance, Kling, Veo, Wan and more through
+[MakeMidas](https://makemidas.com), paid with your MakeMidas credits. Coding
+agents run it like any other command; the
+[agent skill](https://github.com/makemidas-ai/skills) teaches them the
+options, and the same account works in ChatGPT and Claude through the
+[MakeMidas MCP server](https://makemidas.com/developers).
 
 ```bash
 npm i -g @makemidas/cli       # or: npx @makemidas/cli …

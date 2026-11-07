@@ -1,7 +1,7 @@
 {
   "name": "@makemidas/cli",
   "version": "0.1.0",
-  "description": "AI image and video generation from the terminal and for AI agents: Nano Banana, GPT Image, Seedream, Seedance, Kling, Veo and more through MakeMidas.",
+  "description": "AI image and video generation CLI for AI agents (Claude Code, Cursor, Codex) and people: Nano Banana, GPT Image, Seedream, Seedance, Kling, Veo and more through MakeMidas.",
   "keywords": [
     "ai-image-generator",
     "ai-video-generator",
@@ -13,7 +13,15 @@
     "agent-skill",
     "claude-code",
     "cursor",
-    "codex"
+    "codex",
+    "mcp",
+    "image-generation",
+    "video-generation",
+    "nano-banana",
+    "veo",
+    "kling",
+    "gemini-cli",
+    "openclaw"
   ],
   "homepage": "https://makemidas.com/developers",
   "repository": {

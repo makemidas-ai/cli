@@ -29,6 +29,7 @@ export function parse(argv: string[]) {
         'frame-mode': { type: 'string' },
         audio: { type: 'boolean', default: false },
         'quoted-credits': { type: 'string' },
+        'max-credits': { type: 'string' },
         out: { type: 'string', short: 'o', default: '.' },
         'no-download': { type: 'boolean', default: false },
         force: { type: 'boolean', default: false },

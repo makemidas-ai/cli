@@ -1,9 +1,15 @@
 #!/usr/bin/env node
 import { Api } from './api.ts';
-import { generationInput, intOption, parse, usageError } from './args.ts';
+import {
+  generationInput,
+  intOption,
+  type Parsed,
+  parse,
+  usageError,
+} from './args.ts';
 import * as commands from './commands.ts';
 import { resolveBaseUrl, VERSION } from './config.ts';
-import { CliError, EXIT } from './errors.ts';
+import { CliError, EXIT, formatError } from './errors.ts';
 import { setQuiet } from './output.ts';
 
 const HELP = `makemidas ${VERSION}: AI images and videos from the terminal, with your MakeMidas credits
@@ -17,9 +23,12 @@ Usage:
   makemidas get <id>                    Fetch a generation (and save its files)
   makemidas list                        Recent generations
   makemidas credits                     Credit balance and plan
-  makemidas models [--kind image|video] Models, options and credit prices
+  makemidas estimate image|video "<prompt>"
+                                        Price a request without charging
+  makemidas models [image|video]        Models, options and credit prices
+  makemidas models <id>                 One model: options, defaults, prices
 
-Generation options (image, video):
+Generation options (image, video, estimate):
   -m, --model <id>        Model id from \`makemidas models\` (default: cheapest)
   -a, --aspect <ratio>    e.g. 1:1, 16:9, 9:16
   -r, --resolution <r>    image: 1K | 2K | 4K; video: 480p | 720p | 1080p
@@ -29,6 +38,8 @@ Generation options (image, video):
   --style <id>            photo, cinematic, film, anime, …
   --enhance               Let MakeMidas expand a short prompt
   --quoted-credits <n>    Refuse to charge anything else
+  --max-credits <n>       image, video: price it first, stop if it costs more,
+                          else run it at exactly the quoted price
   -d, --duration <s>      video: seconds
   --audio                 video: with sound (models that support it)
   --frame-mode <mode>     video: none | first | first_last | reference
@@ -52,11 +63,24 @@ Global:
   -v, --version           Print the version
   -h, --help              This help
 
+Examples:
+  makemidas estimate video "the waves roll in" -d 5 --audio
+  makemidas video "the waves roll in" -d 5 --audio --max-credits 60
+  makemidas models google/gemini-omni-flash
+
 Credentials: \`auth login\`, or MAKEMIDAS_API_KEY (Settings → API keys).
 
 Exit codes: 0 ok, 2 bad input, 3 not signed in, 4 not enough credits or plan
 limit, 5 generation failed, 6 network or server error, 7 not ready yet.
 `;
+
+function maxCredits(v: Parsed['values']): number | undefined {
+  const max = intOption(v['max-credits'], 'max-credits', 0, 1_000_000);
+  if (max !== undefined && v['quoted-credits'] !== undefined) {
+    throw usageError('Use --max-credits or --quoted-credits, not both.');
+  }
+  return max;
+}
 
 async function main(argv: string[]): Promise<void> {
   const { values: v, positionals } = parse(argv);
@@ -94,7 +118,8 @@ async function main(argv: string[]): Promise<void> {
         generationInput(command, rest.join(' '), v),
         v.ref,
         save,
-        { wait: !v['no-wait'], timeoutMin }
+        { wait: !v['no-wait'], timeoutMin },
+        maxCredits(v)
       );
     case 'get':
       return commands.get(api, g, rest[0], save, { wait: v.wait, timeoutMin });
@@ -105,8 +130,24 @@ async function main(argv: string[]): Promise<void> {
       });
     case 'credits':
       return commands.credits(api, g);
+    case 'estimate': {
+      const [kind, ...prompt] = rest;
+      if (kind !== 'image' && kind !== 'video') {
+        throw usageError('Use `estimate image "<prompt>"` or `estimate video "<prompt>"`.');
+      }
+      return commands.estimate(
+        api,
+        g,
+        generationInput(kind, prompt.join(' '), v),
+        v.ref
+      );
+    }
     case 'models': {
-      const kind = v.kind;
+      const [arg] = rest;
+      if (arg && arg !== 'image' && arg !== 'video') {
+        return commands.modelDetails(api, g, arg);
+      }
+      const kind = v.kind ?? arg;
       if (kind && kind !== 'image' && kind !== 'video') {
         throw usageError('--kind must be image or video.');
       }
@@ -128,13 +169,9 @@ main(process.argv.slice(2)).then(
             EXIT.NETWORK,
             'internal'
           );
-    if (process.argv.includes('--json')) {
-      process.stderr.write(
-        `${JSON.stringify({ error: { code: cli.code, message: cli.message } })}\n`
-      );
-    } else {
-      process.stderr.write(`Error: ${cli.message}\n`);
-    }
+    process.stderr.write(
+      `${formatError(cli, process.argv.includes('--json'))}\n`
+    );
     process.exit(cli.exitCode);
   }
 );

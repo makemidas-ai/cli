@@ -28,7 +28,9 @@ makemidas video "the waves roll in" --ref lighthouse.png --duration 5
 | `get <id> [--wait]` | Fetch a generation and save its files |
 | `list [--limit n] [--before t]` | Recent generations |
 | `credits` | Balance, plan, expiring credits |
-| `models [--kind image\|video]` | Model ids, options and credit prices |
+| `models [image\|video]` | Model ids, options and credit prices |
+| `models <id>` | One model: options, defaults, prices and an example request |
+| `estimate image\|video "<prompt>"` | Price a request without charging; takes the `image`/`video` options |
 
 Common options: `--model`, `--aspect`, `--resolution`, `--count`, `--ref`
 (file or URL, repeatable), `--style`, `--enhance`, `--duration`, `--audio`,
@@ -48,6 +50,29 @@ Every generation spends credits at the same prices as the website. Free
 accounts get 10 credits a day, the free models and watermarked images; videos
 need a plan or a credit pack. `makemidas models` shows the prices;
 `--quoted-credits <n>` refuses to charge anything else.
+
+Check a price before spending, with the same options as the real command
+(nothing is charged, and it exits 0 even when the balance is short):
+
+```bash
+makemidas estimate video "the waves roll in" --duration 5 --audio
+makemidas models google/gemini-omni-flash   # options, defaults, prices
+```
+
+Or price and run in one step: `--max-credits <n>` on `image` or `video`
+estimates first and stops (exit 4, nothing charged) when the request costs
+more than `n` or more than your balance. Otherwise it sends the estimated
+request back at exactly the quoted price, with reference images uploaded
+once:
+
+```bash
+makemidas video "the waves roll in" --duration 5 --audio --max-credits 60
+```
+
+When the server can tell, errors end with a hint: try again later, change
+the prompt (a safety filter refused it), or a cheaper `--model` that fits
+your balance. With `--json` the same fields (`retryable`,
+`requiresPromptRevision`, `suggestedModel`) stay in the error object.
 
 ## Sign-in and credentials
 

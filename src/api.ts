@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { accessToken, envCredential } from './auth.ts';
 import { USER_AGENT } from './config.ts';
-import { CliError, EXIT, exitCodeFor } from './errors.ts';
+import { CliError, EXIT, type ErrorDetails, exitCodeFor } from './errors.ts';
 
 /** Calls to MakeMidas's /api/v1 with the stored token or an API key. */
 
@@ -38,34 +38,84 @@ export interface Credits {
   maxOutputs: number;
 }
 
+interface ModelBase {
+  id: string;
+  label: string;
+  tier: 'free' | 'paid';
+  aspectRatios: string[];
+  /** Present on `GET /models/{id}`; the list may leave these out. */
+  family?: string;
+  /** Fraction off the list price, 0 when none. */
+  discount?: number;
+  resolutions?: string[];
+  defaultResolution?: string | null;
+}
+
 export type Model =
-  | {
+  | (ModelBase & {
       kind: 'image';
-      id: string;
-      label: string;
-      tier: 'free' | 'paid';
-      aspectRatios: string[];
       maxReferences: number;
       credits: { resolution: string; credits: number }[];
-    }
-  | {
+      creditsPerReference?: number;
+    })
+  | (ModelBase & {
       kind: 'video';
-      id: string;
-      label: string;
-      tier: 'free' | 'paid';
-      aspectRatios: string[];
       durations: number[];
+      defaultDuration?: number;
       frameModes: string[];
+      frameLimits?: Record<string, { min: number; max: number }>;
       audio: boolean;
-      credits: { resolution: string; creditsPerSecond: number }[];
-    };
+      credits: {
+        resolution: string;
+        creditsPerSecond: number;
+        creditsPerSecondWithAudio?: number;
+      }[];
+      creditsPerFrame?: number;
+    });
+
+/** `GET /models/{id}`: the model and the smallest request for it. */
+export interface ModelDetails {
+  model: Model;
+  example: Record<string, unknown>;
+}
+
+/** `POST /generations/estimate`: the price of a request, nothing charged. */
+export interface Estimate {
+  credits: number;
+  listCredits: number;
+  discount: number;
+  balance: number;
+  affordable: boolean;
+  model: string;
+  /**
+   * The full request with every default filled in. Sent back to
+   * `POST /generations` with `quotedCredits`, it runs at this price.
+   */
+  request: {
+    kind: 'image' | 'video';
+    prompt: string;
+    model: string;
+    aspectRatio: string;
+    resolution: string | null;
+    count: number;
+    referenceIds: string[];
+    enhance: boolean;
+    style?: string;
+    duration?: number;
+    frameMode?: string;
+    audio?: boolean;
+  };
+  /** When not affordable: the cheapest model whose default fits. */
+  suggestedModel?: string;
+}
 
 export interface GenerationInput {
   kind: 'image' | 'video';
   prompt: string;
   model?: string;
   aspectRatio?: string;
-  resolution?: string;
+  /** Null for a model without resolution choices. */
+  resolution?: string | null;
   count?: number;
   referenceIds?: string[];
   enhance?: boolean;
@@ -143,18 +193,32 @@ export class Api {
     let code = 'http_error';
     let message = `${res.status} ${res.statusText}`;
     let credits: number | undefined;
+    const details: ErrorDetails = {};
     try {
       const body = (await res.json()) as {
-        error?: { code?: string; message?: string; credits?: number };
+        error?: {
+          code?: string;
+          message?: string;
+          credits?: number;
+        } & ErrorDetails;
       };
       code = body.error?.code ?? code;
       message = body.error?.message ?? message;
       credits = body.error?.credits;
+      if (typeof body.error?.retryable === 'boolean') {
+        details.retryable = body.error.retryable;
+      }
+      if (typeof body.error?.requiresPromptRevision === 'boolean') {
+        details.requiresPromptRevision = body.error.requiresPromptRevision;
+      }
+      if (typeof body.error?.suggestedModel === 'string') {
+        details.suggestedModel = body.error.suggestedModel;
+      }
     } catch {}
     if (code === 'price_changed' && credits !== undefined) {
       message = `The price is now ${credits} credits; nothing was charged. Run again with --quoted-credits ${credits}.`;
     }
-    throw new CliError(message, exitCodeFor(code, res.status), code);
+    throw new CliError(message, exitCodeFor(code, res.status), code, details);
   }
 
   async json<T>(path: string, opts: RequestOptions = {}): Promise<T> {
@@ -178,6 +242,11 @@ export class Api {
   async models(kind?: 'image' | 'video'): Promise<Model[]> {
     return (await this.json<{ models: Model[] }>('/models', { query: { kind } }))
       .models;
+  }
+
+  /** One model; ids hold a slash, which is sent encoded. */
+  modelDetails(id: string) {
+    return this.json<ModelDetails>(`/models/${encodeURIComponent(id)}`);
   }
 
   /** Upload a local image (or one downloaded from a URL) as a reference. */
@@ -220,6 +289,14 @@ export class Api {
 
   generate(input: GenerationInput) {
     return this.json<Generation>('/generations', {
+      method: 'POST',
+      json: input,
+    });
+  }
+
+  /** Price a request without charging or creating anything. */
+  estimate(input: GenerationInput) {
+    return this.json<Estimate>('/generations/estimate', {
       method: 'POST',
       json: input,
     });

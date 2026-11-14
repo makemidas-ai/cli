@@ -165,17 +165,52 @@ async function uploadRefs(api: Api, refs: string[]): Promise<string[]> {
   return referenceIds;
 }
 
+/**
+ * Price the request first and refuse when it costs more than `maxCredits`;
+ * otherwise send the estimated request back with its price as
+ * `quotedCredits`, so the server charges exactly that or nothing.
+ */
+async function quotedRequest(
+  api: Api,
+  input: GenerationInput,
+  maxCredits: number
+): Promise<GenerationInput> {
+  const quote = await api.estimate(input);
+  if (quote.credits > maxCredits) {
+    throw new CliError(
+      `This costs ${quote.credits} credits, over --max-credits ${maxCredits}. Nothing was charged.`,
+      EXIT.CREDITS,
+      'over_budget'
+    );
+  }
+  if (!quote.affordable) {
+    throw new CliError(
+      `This costs ${quote.credits} credits and your balance is ${quote.balance}. Nothing was charged.`,
+      EXIT.CREDITS,
+      'insufficient_credits',
+      quote.suggestedModel ? { suggestedModel: quote.suggestedModel } : {}
+    );
+  }
+  log(`Quoted ${quote.credits} credits.`);
+  return { ...quote.request, quotedCredits: quote.credits };
+}
+
 export async function generate(
   api: Api,
   g: Globals,
   input: GenerationInput,
   refs: string[],
   save: SaveOptions,
-  wait: WaitOptions
+  wait: WaitOptions,
+  maxCredits?: number
 ): Promise<void> {
   const referenceIds = await uploadRefs(api, refs);
+  const request =
+    maxCredits === undefined
+      ? { ...input, referenceIds }
+      : await quotedRequest(api, { ...input, referenceIds }, maxCredits);
   log(`Generating ${input.kind}…`);
-  let generation = await api.generate({ ...input, referenceIds });
+  let generation = await api.generate(request);
   if (generation.status === 'running' && wait.wait) {
     generation = await waitFor(api, generation, wait.timeoutMin);
   }
@@ -244,7 +279,7 @@ export async function estimate(
     print(`Suggested model: ${result.suggestedModel} (fits your balance)`);
   }
   log(
-    `Nothing was charged. Generate at this price with \`makemidas ${input.kind}\` and the same options plus --quoted-credits ${result.credits}.`
+    `Nothing was charged. Generate at this price with \`makemidas ${input.kind}\` and the same options plus --max-credits ${result.credits}.`
   );
 }
 

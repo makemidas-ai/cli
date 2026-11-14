@@ -59,6 +59,16 @@ makemidas estimate video "the waves roll in" --duration 5 --audio
 makemidas models google/gemini-omni-flash   # options, defaults, prices
 ```
 
+Or price and run in one step: `--max-credits <n>` on `image` or `video`
+estimates first and stops (exit 4, nothing charged) when the request costs
+more than `n` or more than your balance. Otherwise it sends the estimated
+request back at exactly the quoted price, with reference images uploaded
+once:
+
+```bash
+makemidas video "the waves roll in" --duration 5 --audio --max-credits 60
+```
+
 When the server can tell, errors end with a hint: try again later, change
 the prompt (a safety filter refused it), or a cheaper `--model` that fits
 your balance. With `--json` the same fields (`retryable`,

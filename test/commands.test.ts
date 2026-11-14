@@ -77,15 +77,25 @@ const ESTIMATE: Estimate = {
   model: 'google/veo-fast',
   request: {
     kind: 'video',
+    prompt: 'waves',
     model: 'google/veo-fast',
     aspectRatio: '16:9',
     resolution: '720p',
     count: 1,
+    referenceIds: [],
+    enhance: false,
     duration: 4,
     frameMode: 'none',
     audio: false,
   },
   suggestedModel: 'wan/wan-fast',
+};
+
+const AFFORDABLE: Estimate = {
+  ...ESTIMATE,
+  balance: 100,
+  affordable: true,
+  suggestedModel: undefined,
 };
 
 // ---------------------------------------------------------------------------
@@ -389,4 +399,110 @@ test('a server error prints its hint and keeps the fields in --json', async () =
       assert.deepEqual(JSON.parse(json.stderr), { error });
     }
   );
+});
+
+// ---------------------------------------------------------------------------
+// --max-credits
+// ---------------------------------------------------------------------------
+
+const DONE = { id: 'g1', kind: 'video', status: 'done', credits: 48, outputs: [] };
+
+function quoteThenGenerate(quote: Estimate) {
+  return apiWith((url) =>
+    url.pathname.endsWith('/estimate')
+      ? Response.json(quote)
+      : Response.json(DONE, { status: 201 })
+  );
+}
+
+async function generateWithMax(api: Api, max: number) {
+  const input = generationInput('video', 'waves', parse([]).values);
+  await stdout(() =>
+    commands.generate(
+      api,
+      { json: true },
+      input,
+      [],
+      { out: null, force: false },
+      { wait: false, timeoutMin: 1 },
+      max
+    )
+  );
+}
+
+test('--max-credits runs the estimated request at the quoted price', async () => {
+  const { api, calls } = quoteThenGenerate(AFFORDABLE);
+  await generateWithMax(api, 48);
+  assert.deepEqual(
+    calls.map((call) => call.url.pathname),
+    ['/api/v1/generations/estimate', '/api/v1/generations']
+  );
+  assert.deepEqual(JSON.parse(String(calls[1].init?.body)), {
+    ...AFFORDABLE.request,
+    quotedCredits: 48,
+  });
+});
+
+test('--max-credits stops before charging when the price is higher', async () => {
+  const { api, calls } = quoteThenGenerate(AFFORDABLE);
+  await assert.rejects(generateWithMax(api, 47), (error: CliError) => {
+    assert.equal(error.exitCode, EXIT.CREDITS);
+    assert.equal(error.code, 'over_budget');
+    assert.match(error.message, /48 credits, over --max-credits 47/);
+    return true;
+  });
+  assert.equal(calls.length, 1);
+});
+
+test('--max-credits stops when the balance is short and suggests a model', async () => {
+  const { api, calls } = quoteThenGenerate(ESTIMATE);
+  await assert.rejects(generateWithMax(api, 100), (error: CliError) => {
+    assert.equal(error.exitCode, EXIT.CREDITS);
+    assert.equal(error.code, 'insufficient_credits');
+    assert.equal(error.details.suggestedModel, 'wan/wan-fast');
+    return true;
+  });
+  assert.equal(calls.length, 1);
+});
+
+test('`makemidas video --max-credits` uploads nothing twice and exits 0', async () => {
+  await withServer(
+    (req) =>
+      req.url?.endsWith('/estimate')
+        ? { status: 200, json: AFFORDABLE }
+        : { status: 201, json: DONE },
+    async (baseUrl, seen) => {
+      const result = await run([
+        'video',
+        'waves',
+        '--max-credits',
+        '50',
+        '--no-download',
+        '--base-url',
+        baseUrl,
+        '--json',
+      ]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.deepEqual(
+        seen.map((call) => call.path),
+        ['/api/v1/generations/estimate', '/api/v1/generations']
+      );
+      assert.equal(JSON.parse(seen[1].body).quotedCredits, 48);
+    }
+  );
+});
+
+test('--max-credits and --quoted-credits together are a usage error', async () => {
+  const result = await run([
+    'image',
+    'a fox',
+    '--max-credits',
+    '10',
+    '--quoted-credits',
+    '10',
+    '--base-url',
+    'http://127.0.0.1:9',
+  ]);
+  assert.equal(result.code, EXIT.USAGE);
+  assert.match(result.stderr, /not both/);
 });

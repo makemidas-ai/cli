@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 import { Api } from './api.ts';
-import { generationInput, intOption, parse, usageError } from './args.ts';
+import {
+  generationInput,
+  intOption,
+  type Parsed,
+  parse,
+  usageError,
+} from './args.ts';
 import * as commands from './commands.ts';
 import { resolveBaseUrl, VERSION } from './config.ts';
 import { CliError, EXIT, formatError } from './errors.ts';
@@ -32,6 +38,8 @@ Generation options (image, video, estimate):
   --style <id>            photo, cinematic, film, anime, …
   --enhance               Let MakeMidas expand a short prompt
   --quoted-credits <n>    Refuse to charge anything else
+  --max-credits <n>       image, video: price it first, stop if it costs more,
+                          else run it at exactly the quoted price
   -d, --duration <s>      video: seconds
   --audio                 video: with sound (models that support it)
   --frame-mode <mode>     video: none | first | first_last | reference
@@ -57,6 +65,7 @@ Global:
 
 Examples:
   makemidas estimate video "the waves roll in" -d 5 --audio
+  makemidas video "the waves roll in" -d 5 --audio --max-credits 60
   makemidas models google/gemini-omni-flash
 
 Credentials: \`auth login\`, or MAKEMIDAS_API_KEY (Settings → API keys).
@@ -64,6 +73,14 @@ Credentials: \`auth login\`, or MAKEMIDAS_API_KEY (Settings → API keys).
 Exit codes: 0 ok, 2 bad input, 3 not signed in, 4 not enough credits or plan
 limit, 5 generation failed, 6 network or server error, 7 not ready yet.
 `;
+
+function maxCredits(v: Parsed['values']): number | undefined {
+  const max = intOption(v['max-credits'], 'max-credits', 0, 1_000_000);
+  if (max !== undefined && v['quoted-credits'] !== undefined) {
+    throw usageError('Use --max-credits or --quoted-credits, not both.');
+  }
+  return max;
+}
 
 async function main(argv: string[]): Promise<void> {
   const { values: v, positionals } = parse(argv);
@@ -101,7 +118,8 @@ async function main(argv: string[]): Promise<void> {
         generationInput(command, rest.join(' '), v),
         v.ref,
         save,
-        { wait: !v['no-wait'], timeoutMin }
+        { wait: !v['no-wait'], timeoutMin },
+        maxCredits(v)
       );
     case 'get':
       return commands.get(api, g, rest[0], save, { wait: v.wait, timeoutMin });

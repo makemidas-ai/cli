@@ -87,13 +87,20 @@ export interface Estimate {
   balance: number;
   affordable: boolean;
   model: string;
-  /** The request with every default filled in. */
+  /**
+   * The full request with every default filled in. Sent back to
+   * `POST /generations` with `quotedCredits`, it runs at this price.
+   */
   request: {
     kind: 'image' | 'video';
+    prompt: string;
     model: string;
     aspectRatio: string;
     resolution: string | null;
     count: number;
+    referenceIds: string[];
+    enhance: boolean;
+    style?: string;
     duration?: number;
     frameMode?: string;
     audio?: boolean;
@@ -107,7 +114,8 @@ export interface GenerationInput {
   prompt: string;
   model?: string;
   aspectRatio?: string;
-  resolution?: string;
+  /** Null for a model without resolution choices. */
+  resolution?: string | null;
   count?: number;
   referenceIds?: string[];
   enhance?: boolean;

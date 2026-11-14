@@ -3,7 +3,7 @@ import { Api } from './api.ts';
 import { generationInput, intOption, parse, usageError } from './args.ts';
 import * as commands from './commands.ts';
 import { resolveBaseUrl, VERSION } from './config.ts';
-import { CliError, EXIT } from './errors.ts';
+import { CliError, EXIT, formatError } from './errors.ts';
 import { setQuiet } from './output.ts';
 
 const HELP = `makemidas ${VERSION}: AI images and videos from the terminal, with your MakeMidas credits
@@ -17,9 +17,12 @@ Usage:
   makemidas get <id>                    Fetch a generation (and save its files)
   makemidas list                        Recent generations
   makemidas credits                     Credit balance and plan
-  makemidas models [--kind image|video] Models, options and credit prices
+  makemidas estimate image|video "<prompt>"
+                                        Price a request without charging
+  makemidas models [image|video]        Models, options and credit prices
+  makemidas models <id>                 One model: options, defaults, prices
 
-Generation options (image, video):
+Generation options (image, video, estimate):
   -m, --model <id>        Model id from \`makemidas models\` (default: cheapest)
   -a, --aspect <ratio>    e.g. 1:1, 16:9, 9:16
   -r, --resolution <r>    image: 1K | 2K | 4K; video: 480p | 720p | 1080p
@@ -51,6 +54,10 @@ Global:
   --base-url <url>        Server (default https://makemidas.com, or MAKEMIDAS_BASE_URL)
   -v, --version           Print the version
   -h, --help              This help
+
+Examples:
+  makemidas estimate video "the waves roll in" -d 5 --audio
+  makemidas models google/gemini-omni-flash
 
 Credentials: \`auth login\`, or MAKEMIDAS_API_KEY (Settings → API keys).
 
@@ -105,8 +112,24 @@ async function main(argv: string[]): Promise<void> {
       });
     case 'credits':
       return commands.credits(api, g);
+    case 'estimate': {
+      const [kind, ...prompt] = rest;
+      if (kind !== 'image' && kind !== 'video') {
+        throw usageError('Use `estimate image "<prompt>"` or `estimate video "<prompt>"`.');
+      }
+      return commands.estimate(
+        api,
+        g,
+        generationInput(kind, prompt.join(' '), v),
+        v.ref
+      );
+    }
     case 'models': {
-      const kind = v.kind;
+      const [arg] = rest;
+      if (arg && arg !== 'image' && arg !== 'video') {
+        return commands.modelDetails(api, g, arg);
+      }
+      const kind = v.kind ?? arg;
       if (kind && kind !== 'image' && kind !== 'video') {
         throw usageError('--kind must be image or video.');
       }
@@ -128,13 +151,9 @@ main(process.argv.slice(2)).then(
             EXIT.NETWORK,
             'internal'
           );
-    if (process.argv.includes('--json')) {
-      process.stderr.write(
-        `${JSON.stringify({ error: { code: cli.code, message: cli.message } })}\n`
-      );
-    } else {
-      process.stderr.write(`Error: ${cli.message}\n`);
-    }
+    process.stderr.write(
+      `${formatError(cli, process.argv.includes('--json'))}\n`
+    );
     process.exit(cli.exitCode);
   }
 );

@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import type { Api, Generation, GenerationInput } from './api.ts';
+import type { Api, Estimate, Generation, GenerationInput, Model } from './api.ts';
 import { envCredential, login } from './auth.ts';
 import { deleteProfile, loadProfile, saveProfile } from './config.ts';
 import { CliError, EXIT } from './errors.ts';
@@ -155,6 +155,16 @@ function report(
   }
 }
 
+/** Upload each `--ref` and return the reference ids. */
+async function uploadRefs(api: Api, refs: string[]): Promise<string[]> {
+  const referenceIds: string[] = [];
+  for (const ref of refs) {
+    log(`Uploading ${ref}…`);
+    referenceIds.push(await api.upload(ref));
+  }
+  return referenceIds;
+}
+
 export async function generate(
   api: Api,
   g: Globals,
@@ -163,11 +173,7 @@ export async function generate(
   save: SaveOptions,
   wait: WaitOptions
 ): Promise<void> {
-  const referenceIds: string[] = [];
-  for (const ref of refs) {
-    log(`Uploading ${ref}…`);
-    referenceIds.push(await api.upload(ref));
-  }
+  const referenceIds = await uploadRefs(api, refs);
   log(`Generating ${input.kind}…`);
   let generation = await api.generate({ ...input, referenceIds });
   if (generation.status === 'running' && wait.wait) {
@@ -193,6 +199,53 @@ export async function get(
   }
   const files = await saveOutputs(api, generation, save);
   report(g, generation, files);
+}
+
+// ---------------------------------------------------------------------------
+// estimate
+// ---------------------------------------------------------------------------
+
+/** The settings a request resolved to, e.g. `16:9, 720p, 5s, audio`. */
+function settings(request: Estimate['request']): string {
+  const parts = [request.aspectRatio];
+  if (request.resolution) parts.push(request.resolution);
+  if (request.duration) parts.push(`${request.duration}s`);
+  if (request.audio) parts.push('audio');
+  if (request.frameMode && request.frameMode !== 'none') {
+    parts.push(`frame mode ${request.frameMode}`);
+  }
+  parts.push(`${request.count} output${request.count === 1 ? '' : 's'}`);
+  return parts.join(', ');
+}
+
+export async function estimate(
+  api: Api,
+  g: Globals,
+  input: GenerationInput,
+  refs: string[]
+): Promise<void> {
+  const referenceIds = await uploadRefs(api, refs);
+  const result = await api.estimate({ ...input, referenceIds });
+  if (g.json) {
+    printJson(result);
+    return;
+  }
+  const off =
+    result.discount > 0
+      ? ` (list ${result.listCredits}, ${Math.round(result.discount * 100)}% off)`
+      : '';
+  print(`${result.credits} credits${off}`);
+  print(`Model: ${result.model}`);
+  print(`Settings: ${settings(result.request)}`);
+  print(
+    `Balance: ${result.balance} credits, ${result.affordable ? 'affordable' : 'not enough'}`
+  );
+  if (!result.affordable && result.suggestedModel) {
+    print(`Suggested model: ${result.suggestedModel} (fits your balance)`);
+  }
+  log(
+    `Nothing was charged. Generate at this price with \`makemidas ${input.kind}\` and the same options plus --quoted-credits ${result.credits}.`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -248,12 +301,72 @@ export async function models(
     return;
   }
   for (const model of result) {
-    const prices =
-      model.kind === 'image'
-        ? model.credits.map((c) => `${c.resolution} ${c.credits}`).join(', ')
-        : `${model.credits.map((c) => `${c.resolution} ${c.creditsPerSecond}/s`).join(', ')}; ${model.durations.join('/')}s`;
-    print(
-      `${model.id}  ${model.kind}${model.tier === 'free' ? ' (free)' : ''}  ${model.label}: ${prices}`
-    );
+    print(`${headline(model)}: ${prices(model)}`);
   }
+}
+
+function headline(model: Model): string {
+  return `${model.id}  ${model.kind}${model.tier === 'free' ? ' (free)' : ''}  ${model.label}`;
+}
+
+function prices(model: Model): string {
+  return model.kind === 'image'
+    ? model.credits.map((c) => `${c.resolution} ${c.credits}`).join(', ')
+    : `${model.credits.map((c) => `${c.resolution} ${c.creditsPerSecond}/s`).join(', ')}; ${model.durations.join('/')}s`;
+}
+
+export async function modelDetails(
+  api: Api,
+  g: Globals,
+  id: string
+): Promise<void> {
+  const result = await api.modelDetails(id);
+  if (g.json) {
+    printJson(result);
+    return;
+  }
+  const { model, example } = result;
+  print(headline(model));
+  if (model.family) print(`  Family: ${model.family}`);
+  print(`  Aspect ratios: ${model.aspectRatios.join(', ')}`);
+  if (model.resolutions?.length) {
+    const fallback = model.defaultResolution
+      ? ` (default ${model.defaultResolution})`
+      : '';
+    print(`  Resolutions: ${model.resolutions.join(', ')}${fallback}`);
+  }
+  if (model.kind === 'image') {
+    const extra = model.creditsPerReference
+      ? ` (+${model.creditsPerReference} credits each)`
+      : '';
+    print(`  References: up to ${model.maxReferences}${extra}`);
+    print(`  Credits: ${prices(model)}`);
+  } else {
+    const fallback = model.defaultDuration
+      ? ` (default ${model.defaultDuration}s)`
+      : '';
+    print(`  Durations: ${model.durations.join('/')}s${fallback}`);
+    const modes = model.frameModes.map((mode) => {
+      const limit = model.frameLimits?.[mode];
+      if (!limit || mode === 'none') return mode;
+      const images =
+        limit.min === limit.max ? `${limit.min}` : `${limit.min}-${limit.max}`;
+      return `${mode} (${images} image${limit.max === 1 ? '' : 's'})`;
+    });
+    print(`  Frame modes: ${modes.join(', ')}`);
+    print(`  Audio: ${model.audio ? 'yes' : 'no'}`);
+    const rates = model.credits.map(
+      (c) =>
+        `${c.resolution} ${c.creditsPerSecond}/s${c.creditsPerSecondWithAudio ? ` (${c.creditsPerSecondWithAudio}/s with audio)` : ''}`
+    );
+    const extra = model.creditsPerFrame
+      ? `; +${model.creditsPerFrame} per frame or reference image`
+      : '';
+    print(`  Credits: ${rates.join(', ')}${extra}`);
+  }
+  if (model.discount) {
+    print(`  Discount: ${Math.round(model.discount * 100)}% off the list price`);
+  }
+  print('Example request:');
+  print(JSON.stringify(example, null, 2));
 }

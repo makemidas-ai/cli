@@ -1,7 +1,19 @@
 import { existsSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import type { Api, Estimate, Generation, GenerationInput, Model } from './api.ts';
+import { createInterface } from 'node:readline/promises';
+import type {
+  Api,
+  Comparison,
+  Estimate,
+  FeedbackInput,
+  Generation,
+  GenerationInput,
+  Kind,
+  MediaUploadKind,
+  Model,
+  TranscriptFormat,
+} from './api.ts';
 import { envCredential, login } from './auth.ts';
 import { deleteProfile, loadProfile, saveProfile } from './config.ts';
 import { CliError, EXIT } from './errors.ts';
@@ -16,7 +28,42 @@ const EXTENSIONS: Record<string, string> = {
   'image/png': 'png',
   'image/webp': 'webp',
   'video/mp4': 'mp4',
+  'video/quicktime': 'mov',
+  'video/webm': 'webm',
+  'audio/mpeg': 'mp3',
+  'audio/mp3': 'mp3',
+  'audio/wav': 'wav',
+  'audio/x-wav': 'wav',
+  'audio/wave': 'wav',
+  'audio/mp4': 'm4a',
+  'audio/x-m4a': 'm4a',
+  'audio/aac': 'aac',
+  'audio/flac': 'flac',
+  'audio/ogg': 'ogg',
+  'audio/opus': 'opus',
+  'audio/webm': 'webm',
+  'application/json': 'json',
+  'text/plain': 'txt',
 };
+
+/** Where a generation's file goes: `<dir>/makemidas-<id>-<n>.<ext>`. */
+function outputPath(dir: string, generation: Generation, n: number, ext: string) {
+  return join(dir, `makemidas-${generation.id.slice(0, 8)}-${n}.${ext}`);
+}
+
+async function writeOutput(
+  file: string,
+  bytes: Uint8Array,
+  force: boolean
+): Promise<boolean> {
+  if (existsSync(file) && !force) {
+    warn(`${file} exists; skipped (use --force to overwrite).`);
+    return false;
+  }
+  await writeFile(file, bytes);
+  log(`Saved ${file} (${formatBytes(bytes.byteLength)})`);
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // auth
@@ -95,15 +142,9 @@ async function saveOutputs(
   for (const [index, output] of generation.outputs.entries()) {
     if (output.status !== 'done' || !output.url) continue;
     const { bytes, type } = await api.download(output.url);
-    const ext = EXTENSIONS[type.split(';')[0]] ?? 'bin';
-    const file = join(dir, `makemidas-${generation.id.slice(0, 8)}-${index + 1}.${ext}`);
-    if (existsSync(file) && !save.force) {
-      warn(`${file} exists; skipped (use --force to overwrite).`);
-      continue;
-    }
-    await writeFile(file, bytes);
-    log(`Saved ${file} (${formatBytes(bytes.byteLength)})`);
-    files.push(file);
+    const ext = EXTENSIONS[type.split(';')[0].trim()] ?? 'bin';
+    const file = outputPath(dir, generation, index + 1, ext);
+    if (await writeOutput(file, bytes, save.force)) files.push(file);
   }
   return files;
 }
@@ -126,17 +167,16 @@ async function waitFor(
 function report(
   g: Globals,
   generation: Generation,
-  files: string[]
+  files: string[],
+  links: string[] = generation.outputs.flatMap((o) => (o.url ? [o.url] : []))
 ): void {
   if (g.json) {
     printJson({ ...generation, files });
   } else {
     if (files.length) for (const file of files) print(file);
-    else {
-      for (const output of generation.outputs) if (output.url) print(output.url);
-    }
+    else for (const link of links) print(link);
     log(
-      `${generation.kind} ${generation.id}: ${generation.status}, ${generation.credits} credits${generation.watermarked ? ' (watermarked: free plan)' : ''}.`
+      `${generation.kind} ${generation.id}: ${generation.status}, ${generation.credits} credits${generation.watermarked ? ' (watermarked: no plan or credit pack)' : ''}.`
     );
   }
   if (generation.status === 'failed') {
@@ -195,6 +235,76 @@ async function quotedRequest(
   return { ...quote.request, quotedCredits: quote.credits };
 }
 
+/** Upload a file or link to audio- or video-uploads; returns its fileId. */
+async function uploadMedia(
+  api: Api,
+  kind: MediaUploadKind,
+  source: string
+): Promise<string> {
+  // An id from an earlier upload (or estimate) is used as it is.
+  if (UUID.test(source) && !existsSync(source)) return source;
+  log(`Uploading ${source}…`);
+  const upload = await api.mediaUpload(kind, source);
+  log(`Uploaded ${upload.fileName ?? source}: ${formatSeconds(upload.durationSeconds)}.`);
+  return upload.fileId;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function formatSeconds(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds * 10) / 10} s`;
+  const m = Math.floor(seconds / 60);
+  const s = Math.round(seconds % 60);
+  return `${m} min ${String(s).padStart(2, '0')} s`;
+}
+
+/** A file to upload before the request: transcription audio or a video to upscale. */
+export interface MediaSource {
+  kind: MediaUploadKind;
+  source: string;
+}
+
+/** Upload what the request needs and fill in referenceIds or fileId. */
+async function prepare(
+  api: Api,
+  input: GenerationInput,
+  refs: string[],
+  media?: MediaSource
+): Promise<GenerationInput> {
+  const referenceIds = await uploadRefs(api, refs);
+  const fileId = media ? await uploadMedia(api, media.kind, media.source) : undefined;
+  return {
+    ...input,
+    // Images and videos always send the list; other kinds only when given.
+    ...(input.kind === 'image' || input.kind === 'video' || referenceIds.length
+      ? { referenceIds }
+      : {}),
+    ...(fileId ? { fileId } : {}),
+  };
+}
+
+/** Upload, price when asked, start the generation and wait for it. */
+async function start(
+  api: Api,
+  input: GenerationInput,
+  refs: string[],
+  wait: WaitOptions,
+  maxCredits?: number,
+  media?: MediaSource
+): Promise<Generation> {
+  const prepared = await prepare(api, input, refs, media);
+  const request =
+    maxCredits === undefined
+      ? prepared
+      : await quotedRequest(api, prepared, maxCredits);
+  log(`Generating ${input.kind}…`);
+  let generation = await api.generate(request);
+  if (generation.status === 'running' && wait.wait) {
+    generation = await waitFor(api, generation, wait.timeoutMin);
+  }
+  return generation;
+}
+
 export async function generate(
   api: Api,
   g: Globals,
@@ -202,20 +312,72 @@ export async function generate(
   refs: string[],
   save: SaveOptions,
   wait: WaitOptions,
-  maxCredits?: number
+  maxCredits?: number,
+  media?: MediaSource
 ): Promise<void> {
-  const referenceIds = await uploadRefs(api, refs);
-  const request =
-    maxCredits === undefined
-      ? { ...input, referenceIds }
-      : await quotedRequest(api, { ...input, referenceIds }, maxCredits);
-  log(`Generating ${input.kind}…`);
-  let generation = await api.generate(request);
-  if (generation.status === 'running' && wait.wait) {
-    generation = await waitFor(api, generation, wait.timeoutMin);
-  }
+  const generation = await start(api, input, refs, wait, maxCredits, media);
   const files = await saveOutputs(api, generation, save);
   report(g, generation, files);
+}
+
+// ---------------------------------------------------------------------------
+// transcribe
+// ---------------------------------------------------------------------------
+
+/**
+ * Upload the audio (or send its link), transcribe it, and save the
+ * transcript in `format`. `save.out` of `-` prints the transcript itself.
+ */
+export async function transcribe(
+  api: Api,
+  g: Globals,
+  input: GenerationInput,
+  source: string,
+  format: TranscriptFormat,
+  save: SaveOptions,
+  wait: WaitOptions,
+  maxCredits?: number
+): Promise<void> {
+  if (save.out === '-' && g.json) {
+    throw new CliError(
+      '`--out -` prints the transcript itself; leave out --json.',
+      EXIT.USAGE,
+      'usage'
+    );
+  }
+  const generation = await start(api, input, [], wait, maxCredits, {
+    kind: 'audio',
+    source,
+  });
+  const files: string[] = [];
+  const links: string[] = [];
+  for (const [index, output] of generation.outputs.entries()) {
+    if (output.status !== 'done') continue;
+    const link = output.downloads?.[format];
+    if (!link) {
+      if (output.url) {
+        warn(`No ${format} download for this transcript; printing its JSON link.`);
+        links.push(output.url);
+      }
+      continue;
+    }
+    links.push(link);
+    if (!save.out) continue;
+    const { bytes } = await api.download(link);
+    if (save.out === '-') {
+      process.stdout.write(bytes);
+      continue;
+    }
+    const dir = resolve(save.out);
+    await mkdir(dir, { recursive: true });
+    const file = outputPath(dir, generation, index + 1, format);
+    if (await writeOutput(file, bytes, save.force)) files.push(file);
+  }
+  if (save.out === '-') {
+    report({ json: false }, generation, [], []);
+    return;
+  }
+  report(g, generation, files, links);
 }
 
 export async function get(
@@ -242,14 +404,23 @@ export async function get(
 
 /** The settings a request resolved to, e.g. `16:9, 720p, 5s, audio`. */
 function settings(request: Estimate['request']): string {
-  const parts = [request.aspectRatio];
+  const parts: string[] = [];
+  if (request.task) parts.push(request.task);
+  if (request.aspectRatio) parts.push(request.aspectRatio);
   if (request.resolution) parts.push(request.resolution);
   if (request.duration) parts.push(`${request.duration}s`);
+  if (request.durationSeconds) parts.push(`${request.durationSeconds}s`);
   if (request.audio) parts.push('audio');
   if (request.frameMode && request.frameMode !== 'none') {
     parts.push(`frame mode ${request.frameMode}`);
   }
-  parts.push(`${request.count} output${request.count === 1 ? '' : 's'}`);
+  if (request.upscaleFactor) parts.push(`${request.upscaleFactor}x`);
+  if (request.voice) parts.push(`voice ${request.voice}`);
+  if (request.instrumental) parts.push('instrumental');
+  if (request.loop) parts.push('loop');
+  if (request.kind === 'image' || request.kind === 'video') {
+    parts.push(`${request.count} output${request.count === 1 ? '' : 's'}`);
+  }
   return parts.join(', ');
 }
 
@@ -257,10 +428,11 @@ export async function estimate(
   api: Api,
   g: Globals,
   input: GenerationInput,
-  refs: string[]
+  refs: string[],
+  command: string = input.kind,
+  media?: MediaSource
 ): Promise<void> {
-  const referenceIds = await uploadRefs(api, refs);
-  const result = await api.estimate({ ...input, referenceIds });
+  const result = await api.estimate(await prepare(api, input, refs, media));
   if (g.json) {
     printJson(result);
     return;
@@ -279,7 +451,7 @@ export async function estimate(
     print(`Suggested model: ${result.suggestedModel} (fits your balance)`);
   }
   log(
-    `Nothing was charged. Generate at this price with \`makemidas ${input.kind}\` and the same options plus --max-credits ${result.credits}.`
+    `Nothing was charged. Generate at this price with \`makemidas ${command}\` and the same options plus --max-credits ${result.credits}.`
   );
 }
 
@@ -316,7 +488,9 @@ export async function credits(api: Api, g: Globals): Promise<void> {
   }
   print(`${result.balance} credits (plan: ${result.plan ?? 'free'}).`);
   if (result.watermarked) {
-    print('Free plan: 10 credits a day, free models only, watermarked images.');
+    print(
+      'No plan or credit pack yet: credits come from a plan or a credit pack (`makemidas credits buy`).'
+    );
   } else {
     print(`Up to ${result.concurrency} at once, ${result.maxOutputs} outputs each.`);
   }
@@ -328,7 +502,7 @@ export async function credits(api: Api, g: Globals): Promise<void> {
 export async function models(
   api: Api,
   g: Globals,
-  kind?: 'image' | 'video'
+  kind?: Kind
 ): Promise<void> {
   const result = await api.models(kind);
   if (g.json) {
@@ -341,13 +515,33 @@ export async function models(
 }
 
 function headline(model: Model): string {
-  return `${model.id}  ${model.kind}${model.tier === 'free' ? ' (free)' : ''}  ${model.label}`;
+  const task = 'task' in model ? ` ${model.task}` : '';
+  return `${model.id}  ${model.kind}${task}${model.tier === 'free' ? ' (free)' : ''}  ${model.label}`;
 }
 
 function prices(model: Model): string {
-  return model.kind === 'image'
-    ? model.credits.map((c) => `${c.resolution} ${c.credits}`).join(', ')
-    : `${model.credits.map((c) => `${c.resolution} ${c.creditsPerSecond}/s`).join(', ')}; ${model.durations.join('/')}s`;
+  switch (model.kind) {
+    case 'image':
+      return model.credits.map((c) => `${c.resolution} ${c.credits}`).join(', ');
+    case 'video':
+      return `${model.credits.map((c) => `${c.resolution} ${c.creditsPerSecond}/s`).join(', ')}; ${model.durations.join('/')}s`;
+    case 'audio':
+      if (model.creditsPer1kChars !== undefined) {
+        return `${model.creditsPer1kChars} per 1,000 characters`;
+      }
+      return `${model.creditsPerTrack ?? '?'} per request`;
+    case 'transcription':
+      return `${model.creditsPerHour} per hour of audio`;
+    case 'edit':
+      if (model.creditsPerSecond?.length) {
+        return model.creditsPerSecond
+          .map((c) => `${c.resolution} ${c.creditsPerSecond}/s`)
+          .join(', ');
+      }
+      return (model.credits ?? [])
+        .map((c) => `${c.resolution} ${c.credits}`)
+        .join(', ');
+  }
 }
 
 export async function modelDetails(
@@ -363,45 +557,317 @@ export async function modelDetails(
   const { model, example } = result;
   print(headline(model));
   if (model.family) print(`  Family: ${model.family}`);
-  print(`  Aspect ratios: ${model.aspectRatios.join(', ')}`);
+  if (model.aspectRatios?.length) {
+    print(`  Aspect ratios: ${model.aspectRatios.join(', ')}`);
+  }
   if (model.resolutions?.length) {
     const fallback = model.defaultResolution
       ? ` (default ${model.defaultResolution})`
       : '';
     print(`  Resolutions: ${model.resolutions.join(', ')}${fallback}`);
   }
-  if (model.kind === 'image') {
-    const extra = model.creditsPerReference
-      ? ` (+${model.creditsPerReference} credits each)`
-      : '';
-    print(`  References: up to ${model.maxReferences}${extra}`);
-    print(`  Credits: ${prices(model)}`);
-  } else {
-    const fallback = model.defaultDuration
-      ? ` (default ${model.defaultDuration}s)`
-      : '';
-    print(`  Durations: ${model.durations.join('/')}s${fallback}`);
-    const modes = model.frameModes.map((mode) => {
-      const limit = model.frameLimits?.[mode];
-      if (!limit || mode === 'none') return mode;
-      const images =
-        limit.min === limit.max ? `${limit.min}` : `${limit.min}-${limit.max}`;
-      return `${mode} (${images} image${limit.max === 1 ? '' : 's'})`;
-    });
-    print(`  Frame modes: ${modes.join(', ')}`);
-    print(`  Audio: ${model.audio ? 'yes' : 'no'}`);
-    const rates = model.credits.map(
-      (c) =>
-        `${c.resolution} ${c.creditsPerSecond}/s${c.creditsPerSecondWithAudio ? ` (${c.creditsPerSecondWithAudio}/s with audio)` : ''}`
-    );
-    const extra = model.creditsPerFrame
-      ? `; +${model.creditsPerFrame} per frame or reference image`
-      : '';
-    print(`  Credits: ${rates.join(', ')}${extra}`);
+  switch (model.kind) {
+    case 'image': {
+      const extra = model.creditsPerReference
+        ? ` (+${model.creditsPerReference} credits each)`
+        : '';
+      print(`  References: up to ${model.maxReferences}${extra}`);
+      print(`  Credits: ${prices(model)}`);
+      break;
+    }
+    case 'video': {
+      const fallback = model.defaultDuration
+        ? ` (default ${model.defaultDuration}s)`
+        : '';
+      print(`  Durations: ${model.durations.join('/')}s${fallback}`);
+      const modes = model.frameModes.map((mode) => {
+        const limit = model.frameLimits?.[mode];
+        if (!limit || mode === 'none') return mode;
+        const images =
+          limit.min === limit.max ? `${limit.min}` : `${limit.min}-${limit.max}`;
+        return `${mode} (${images} image${limit.max === 1 ? '' : 's'})`;
+      });
+      print(`  Frame modes: ${modes.join(', ')}`);
+      print(`  Audio: ${model.audio ? 'yes' : 'no'}`);
+      const rates = model.credits.map(
+        (c) =>
+          `${c.resolution} ${c.creditsPerSecond}/s${c.creditsPerSecondWithAudio ? ` (${c.creditsPerSecondWithAudio}/s with audio)` : ''}`
+      );
+      const extra = model.creditsPerFrame
+        ? `; +${model.creditsPerFrame} per frame or reference image`
+        : '';
+      print(`  Credits: ${rates.join(', ')}${extra}`);
+      break;
+    }
+    case 'audio': {
+      if (model.task !== 'speech') {
+        const fallback = model.defaultDuration
+          ? ` (default ${model.defaultDuration}s)`
+          : '';
+        print(
+          `  Durations: ${model.durations.length ? `${model.durations.join('/')}s${fallback}` : 'set by the model'}`
+        );
+      }
+      const options = [
+        model.lyrics && 'lyrics',
+        model.instrumental && 'instrumental',
+        model.loop && 'loop and bpm',
+        model.maxDeliveryChars && `delivery (up to ${model.maxDeliveryChars} characters)`,
+        model.speedRange &&
+          `speed ${model.speedRange.min}-${model.speedRange.max} and stability`,
+      ].filter(Boolean);
+      if (options.length) print(`  Options: ${options.join(', ')}`);
+      if (model.maxChars) print(`  Text: up to ${model.maxChars} characters`);
+      if (model.voices?.length) {
+        print(`  Voices${model.defaultVoice ? ` (default ${model.defaultVoice})` : ''}:`);
+        for (const voice of model.voices) {
+          print(`    ${voice.id}  ${voice.name}: ${voice.description}`);
+        }
+      }
+      if (model.languages?.length) {
+        print(`  Languages: ${model.languages.join(', ')}`);
+      }
+      print(`  Credits: ${prices(model)}`);
+      break;
+    }
+    case 'transcription':
+      print(`  Languages: about ${model.languages}${model.speakers ? ', speaker labels' : ''}`);
+      print(`  Files: ${model.formats}, up to ${Math.round(model.maxDurationSeconds / 60)} min and ${formatBytes(model.maxBytes)}`);
+      print(`  Downloads: ${model.outputFormats.join(', ')}`);
+      print(`  Credits: ${prices(model)}, at least 1`);
+      break;
+    case 'edit':
+      print(`  Takes: ${model.input}`);
+      print(`  Limits: ${model.limits}`);
+      if (model.upscaleFactors?.length) {
+        print(`  Scales: ${model.upscaleFactors.map((f) => `${f}x`).join(', ')}`);
+      }
+      print(`  Credits: ${prices(model)}`);
+      break;
   }
   if (model.discount) {
     print(`  Discount: ${Math.round(model.discount * 100)}% off the list price`);
   }
   print('Example request:');
   print(JSON.stringify(example, null, 2));
+}
+
+// ---------------------------------------------------------------------------
+// compare
+// ---------------------------------------------------------------------------
+
+export interface CompareRequest {
+  prompt: string;
+  models: string[];
+  aspectRatio?: string;
+  quotedCredits?: number;
+}
+
+/**
+ * Price each model as the comparison will run it (one image at its default
+ * size) and refuse when the total is over `maxCredits` or the balance.
+ */
+async function quotedComparison(
+  api: Api,
+  request: CompareRequest & { referenceIds: string[] },
+  maxCredits: number
+): Promise<number> {
+  const quotes = await Promise.all(
+    request.models.map((model) =>
+      api.estimate({
+        kind: 'image',
+        prompt: request.prompt,
+        model,
+        count: 1,
+        ...(request.aspectRatio ? { aspectRatio: request.aspectRatio } : {}),
+        referenceIds: request.referenceIds,
+      })
+    )
+  );
+  const total = quotes.reduce((sum, quote) => sum + quote.credits, 0);
+  const balance = quotes[0]?.balance ?? 0;
+  if (total > maxCredits) {
+    throw new CliError(
+      `This comparison costs ${total} credits (${quotes.map((q) => `${q.model} ${q.credits}`).join(', ')}), over --max-credits ${maxCredits}. Nothing was charged.`,
+      EXIT.CREDITS,
+      'over_budget'
+    );
+  }
+  if (total > balance) {
+    throw new CliError(
+      `This comparison costs ${total} credits and your balance is ${balance}. Nothing was charged.`,
+      EXIT.CREDITS,
+      'insufficient_credits'
+    );
+  }
+  log(`Quoted ${total} credits.`);
+  return total;
+}
+
+/** One prompt on 2-4 image models; saves every model's image. */
+export async function compare(
+  api: Api,
+  g: Globals,
+  request: CompareRequest,
+  refs: string[],
+  save: SaveOptions,
+  maxCredits?: number
+): Promise<void> {
+  const referenceIds = await uploadRefs(api, refs);
+  const body = { ...request, referenceIds };
+  if (maxCredits !== undefined) {
+    body.quotedCredits = await quotedComparison(api, body, maxCredits);
+  }
+  log(`Comparing ${request.models.join(', ')}…`);
+  const result: Comparison = await api.compare(body);
+  const files: string[] = [];
+  for (const generation of result.generations) {
+    files.push(...(await saveOutputs(api, generation, save)));
+  }
+  if (g.json) {
+    printJson({ ...result, files });
+  } else {
+    for (const generation of result.generations) {
+      const mine = files.filter((file) =>
+        file.includes(`makemidas-${generation.id.slice(0, 8)}-`)
+      );
+      const links = mine.length
+        ? mine
+        : generation.outputs.flatMap((o) => (o.url ? [o.url] : []));
+      for (const line of links) print(`${generation.model}  ${line}`);
+      log(
+        `${generation.model} ${generation.id}: ${generation.status}, ${generation.credits} credits${generation.error ? ` (${generation.error})` : ''}.`
+      );
+    }
+    log(`${result.credits} credits in all.`);
+  }
+  for (const item of result.failed) {
+    warn(`${item.model} did not start: ${item.error.message}`);
+  }
+  if (!result.generations.some((generation) => generation.status === 'done')) {
+    const first = result.failed[0]?.error;
+    throw new CliError(
+      first?.message ??
+        result.generations[0]?.error ??
+        'No model could make this; credits were refunded.',
+      EXIT.FAILED,
+      'generation_failed',
+      first
+        ? {
+            ...(first.retryable !== undefined ? { retryable: first.retryable } : {}),
+            ...(first.requiresPromptRevision !== undefined
+              ? { requiresPromptRevision: first.requiresPromptRevision }
+              : {}),
+          }
+        : {}
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// delete / feedback / credits link
+// ---------------------------------------------------------------------------
+
+/** Ask a yes/no question on the terminal; anything but y/yes is no. */
+export async function askYesNo(question: string): Promise<boolean> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer = await rl.question(`${question} [y/N] `);
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
+}
+
+export interface DeleteOptions {
+  /** --yes: skip the question. */
+  yes: boolean;
+  /** Whether a person can answer (stdin is a terminal). */
+  interactive: boolean;
+  confirm?: (question: string) => Promise<boolean>;
+}
+
+export async function deleteGeneration(
+  api: Api,
+  g: Globals,
+  id: string | undefined,
+  opts: DeleteOptions
+): Promise<void> {
+  if (!id) {
+    throw new CliError(
+      'Give a generation id: `makemidas delete <id>`.',
+      EXIT.USAGE,
+      'usage'
+    );
+  }
+  if (!opts.yes) {
+    if (!opts.interactive) {
+      throw new CliError(
+        `Deleting ${id} removes its files for good. Run again with --yes to confirm.`,
+        EXIT.USAGE,
+        'confirmation_required'
+      );
+    }
+    const confirm = opts.confirm ?? askYesNo;
+    const ok = await confirm(
+      `Delete generation ${id} and its files for good? Credits are not refunded.`
+    );
+    if (!ok) {
+      throw new CliError('Not deleted.', EXIT.USAGE, 'cancelled');
+    }
+  }
+  const result = await api.deleteGeneration(id);
+  if (g.json) printJson(result);
+  else print(`Deleted ${result.id}.`);
+}
+
+export async function feedback(
+  api: Api,
+  g: Globals,
+  input: FeedbackInput
+): Promise<void> {
+  if (!input.message.trim()) {
+    throw new CliError(
+      'Give a message: `makemidas feedback "The upscale kept the noise"`.',
+      EXIT.USAGE,
+      'usage'
+    );
+  }
+  const result = await api.feedback({ ...input, message: input.message.trim() });
+  if (g.json) printJson(result);
+  else print('Thanks, your feedback was sent.');
+}
+
+/** Where to buy credits; prints links only and opens nothing. */
+export async function creditsLink(api: Api, g: Globals): Promise<void> {
+  const result = await api.purchaseLink();
+  if (g.json) {
+    printJson(result);
+    return;
+  }
+  print(result.url);
+  print(`Balance: ${result.balance} credits (plan: ${result.plan ?? 'none'}).`);
+  if (!result.purchasable) {
+    print('Checkout is switched off on this site for now.');
+  }
+  if (result.plans.length) {
+    print(`Plans (${result.plansUrl}):`);
+    for (const plan of result.plans) {
+      const marks = [plan.current && 'current', plan.popular && 'popular']
+        .filter(Boolean)
+        .join(', ');
+      print(
+        `  ${plan.name}: $${plan.priceUsd}/${plan.interval}, ${plan.monthlyCredits} credits a month, ${plan.concurrency} at once${marks ? ` (${marks})` : ''}`
+      );
+    }
+  }
+  if (result.packs.length) {
+    print(`Credit packs (${result.packsUrl}):`);
+    for (const pack of result.packs) {
+      print(
+        `  $${pack.priceUsd}: ${pack.credits} credits (${pack.subscriberCredits} with a plan)${pack.popular ? ' (popular)' : ''}`
+      );
+    }
+  }
+  print(`Manage billing: ${result.billingUrl}`);
 }

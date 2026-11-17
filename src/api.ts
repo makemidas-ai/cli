@@ -6,16 +6,39 @@ import { CliError, EXIT, type ErrorDetails, exitCodeFor } from './errors.ts';
 
 /** Calls to MakeMidas's /api/v1 with the stored token or an API key. */
 
+export type Kind = 'image' | 'video' | 'audio' | 'transcription' | 'edit';
+export const KINDS: readonly Kind[] = [
+  'image',
+  'video',
+  'audio',
+  'transcription',
+  'edit',
+];
+
+export type TranscriptFormat = 'txt' | 'srt' | 'vtt' | 'json';
+
 export interface Output {
   status: 'running' | 'done' | 'failed';
   /** Signed link, valid for an hour. */
   url?: string;
+  /** Audio only: cover art the model made. */
+  coverUrl?: string;
+  /** Transcription only: the start of the text and its facts. */
+  transcript?: {
+    preview?: string;
+    durationSeconds?: number;
+    speakers?: number;
+    language?: string;
+  };
+  /** Transcription only: a signed download link for each format. */
+  downloads?: Partial<Record<TranscriptFormat, string>>;
 }
 
 export interface Generation {
   id: string;
-  kind: 'image' | 'video';
+  kind: Kind;
   model: string;
+  modelLabel?: string;
   prompt: string;
   params: Record<string, unknown>;
   count: number;
@@ -42,7 +65,8 @@ interface ModelBase {
   id: string;
   label: string;
   tier: 'free' | 'paid';
-  aspectRatios: string[];
+  /** Images and videos only. */
+  aspectRatios?: string[];
   /** Present on `GET /models/{id}`; the list may leave these out. */
   family?: string;
   /** Fraction off the list price, 0 when none. */
@@ -54,12 +78,14 @@ interface ModelBase {
 export type Model =
   | (ModelBase & {
       kind: 'image';
+      aspectRatios: string[];
       maxReferences: number;
       credits: { resolution: string; credits: number }[];
       creditsPerReference?: number;
     })
   | (ModelBase & {
       kind: 'video';
+      aspectRatios: string[];
       durations: number[];
       defaultDuration?: number;
       frameModes: string[];
@@ -71,6 +97,42 @@ export type Model =
         creditsPerSecondWithAudio?: number;
       }[];
       creditsPerFrame?: number;
+    })
+  | (ModelBase & {
+      kind: 'audio';
+      task: 'music' | 'sfx' | 'speech';
+      durations: number[];
+      defaultDuration: number | null;
+      lyrics: boolean;
+      instrumental: boolean;
+      loop: boolean;
+      creditsPerTrack?: number;
+      creditsPer1kChars?: number;
+      maxChars?: number;
+      voices?: { id: string; name: string; description: string }[];
+      defaultVoice?: string;
+      speedRange?: { min: number; max: number; default: number };
+      maxDeliveryChars?: number;
+      languages?: string[];
+    })
+  | (ModelBase & {
+      kind: 'transcription';
+      creditsPerHour: number;
+      maxDurationSeconds: number;
+      maxBytes: number;
+      formats: string;
+      speakers: boolean;
+      languages: number;
+      outputFormats: TranscriptFormat[];
+    })
+  | (ModelBase & {
+      kind: 'edit';
+      task: 'remove-background' | 'upscale-image' | 'upscale-video';
+      input: string;
+      limits: string;
+      credits?: { resolution: string; credits: number }[];
+      creditsPerSecond?: { resolution: string; creditsPerSecond: number }[];
+      upscaleFactors?: number[];
     });
 
 /** `GET /models/{id}`: the model and the smallest request for it. */
@@ -91,28 +153,29 @@ export interface Estimate {
    * The full request with every default filled in. Sent back to
    * `POST /generations` with `quotedCredits`, it runs at this price.
    */
-  request: {
-    kind: 'image' | 'video';
+  request: GenerationInput & {
     prompt: string;
     model: string;
-    aspectRatio: string;
-    resolution: string | null;
     count: number;
     referenceIds: string[];
     enhance: boolean;
-    style?: string;
-    duration?: number;
-    frameMode?: string;
-    audio?: boolean;
   };
   /** When not affordable: the cheapest model whose default fits. */
   suggestedModel?: string;
 }
 
+export type AudioTask = 'music' | 'sfx' | 'speech';
+export type EditTask = 'remove-background' | 'upscale-image' | 'upscale-video';
+
 export interface GenerationInput {
-  kind: 'image' | 'video';
-  prompt: string;
+  kind: Kind;
+  /** What to make; the text to speak for a voiceover; none for edits and transcripts. */
+  prompt?: string;
   model?: string;
+  /** Audio and edits. */
+  task?: AudioTask | EditTask;
+  /** Transcription and video upscale: an id from audio- or video-uploads. */
+  fileId?: string;
   aspectRatio?: string;
   /** Null for a model without resolution choices. */
   resolution?: string | null;
@@ -123,13 +186,100 @@ export interface GenerationInput {
   duration?: number;
   frameMode?: string;
   audio?: boolean;
+  /** Music: lyrics, title (transcription: its name), no vocals, length. */
+  lyrics?: string;
+  title?: string;
+  instrumental?: boolean;
+  durationSeconds?: number;
+  /** Sound effects. */
+  loop?: boolean;
+  bpm?: number;
+  /** Voiceovers. */
+  voice?: string;
+  delivery?: string;
+  speed?: number;
+  stability?: number;
+  language?: string;
+  /** Image upscale: 1, 2, 4 or 8. */
+  upscaleFactor?: number;
   quotedCredits?: number;
 }
+
+/** `POST /audio-uploads` and `POST /video-uploads`: the file, measured and priced. */
+export interface MediaUpload {
+  fileId: string;
+  fileName?: string;
+  durationSeconds: number;
+  contentType?: string;
+  size?: number;
+  /** Transcribing it with the default model, or upscaling it to 2K. */
+  credits: number;
+  /** Video uploads: the upscale price for each output box. */
+  creditsByResolution?: Record<string, number>;
+}
+
+export interface CompareInput {
+  prompt: string;
+  models: string[];
+  aspectRatio?: string;
+  referenceIds?: string[];
+  quotedCredits?: number;
+}
+
+/** `POST /generations/compare`: one image generation per model. */
+export interface Comparison {
+  credits: number;
+  generations: Generation[];
+  failed: {
+    model: string;
+    error: { code: string; message: string } & ErrorDetails;
+  }[];
+}
+
+export interface FeedbackInput {
+  kind: 'bug' | 'feature' | 'praise' | 'other';
+  message: string;
+  generationId?: string;
+}
+
+/** `GET /credits/purchase-link`: where to buy, and what is on sale. */
+export interface PurchaseLink {
+  url: string;
+  plansUrl: string;
+  packsUrl: string;
+  billingUrl: string;
+  purchasable: boolean;
+  balance: number;
+  plan: string | null;
+  plans: {
+    id: string;
+    name: string;
+    priceUsd: number;
+    interval: 'month';
+    monthlyCredits: number;
+    concurrency: number;
+    maxOutputs: number;
+    popular: boolean;
+    current: boolean;
+  }[];
+  packs: {
+    id: string;
+    priceUsd: number;
+    credits: number;
+    subscriberCredits: number;
+    popular: boolean;
+  }[];
+}
+
+export type MediaUploadKind = 'audio' | 'video';
 
 interface RequestOptions {
   method?: string;
   json?: unknown;
   form?: FormData;
+  /** A raw request body, sent with `headers` (Content-Type and the like). */
+  body?: Uint8Array<ArrayBuffer>;
+  headers?: Record<string, string>;
   query?: Record<string, string | number | undefined>;
 }
 
@@ -139,6 +289,37 @@ const CONTENT_TYPES: Record<string, string> = {
   '.png': 'image/png',
   '.webp': 'image/webp',
 };
+
+/** What audio- and video-uploads accept, by file extension. */
+const VIDEO_TYPES: Record<string, string> = {
+  '.mp4': 'video/mp4',
+  '.mov': 'video/quicktime',
+};
+const AUDIO_TYPES: Record<string, string> = {
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.m4a': 'audio/mp4',
+  '.aac': 'audio/aac',
+  '.flac': 'audio/flac',
+  '.ogg': 'audio/ogg',
+  '.oga': 'audio/ogg',
+  '.opus': 'audio/opus',
+  '.webm': 'audio/webm',
+  ...VIDEO_TYPES,
+};
+const MEDIA_UPLOADS: Record<
+  MediaUploadKind,
+  { path: string; types: Record<string, string>; what: string }
+> = {
+  audio: {
+    path: '/audio-uploads',
+    types: AUDIO_TYPES,
+    what: 'MP3, WAV, M4A, AAC, FLAC, OGG, Opus, WEBM, MP4 or MOV',
+  },
+  video: { path: '/video-uploads', types: VIDEO_TYPES, what: 'MP4 or MOV' },
+};
+
+const isUrl = (source: string) => /^https?:\/\//i.test(source);
 
 export class Api {
   readonly baseUrl: string;
@@ -168,9 +349,11 @@ export class Api {
           ...(opts.json !== undefined
             ? { 'Content-Type': 'application/json' }
             : {}),
+          ...opts.headers,
         },
         body:
           opts.form ??
+          opts.body ??
           (opts.json !== undefined ? JSON.stringify(opts.json) : undefined),
       });
     } catch (error) {
@@ -239,7 +422,7 @@ export class Api {
     return this.json<Credits>('/credits');
   }
 
-  async models(kind?: 'image' | 'video'): Promise<Model[]> {
+  async models(kind?: Kind): Promise<Model[]> {
     return (await this.json<{ models: Model[] }>('/models', { query: { kind } }))
       .models;
   }
@@ -254,7 +437,7 @@ export class Api {
     let bytes: Uint8Array<ArrayBuffer>;
     let type: string | undefined;
     let name: string;
-    if (/^https?:\/\//i.test(source)) {
+    if (isUrl(source)) {
       const res = await this.fetchImpl(source).catch(() => null);
       if (!res?.ok) {
         throw new CliError(`Could not download ${source}`, EXIT.USAGE, 'invalid_file');
@@ -287,6 +470,44 @@ export class Api {
     return id;
   }
 
+  /**
+   * Upload audio or video to transcribe (`audio`), or a video to upscale
+   * (`video`): a local file goes as the raw body, a link as `{ url }` for
+   * the server to download.
+   */
+  async mediaUpload(kind: MediaUploadKind, source: string): Promise<MediaUpload> {
+    const { path, types, what } = MEDIA_UPLOADS[kind];
+    if (isUrl(source)) {
+      return this.json<MediaUpload>(path, {
+        method: 'POST',
+        json: { url: source },
+      });
+    }
+    const type = types[extname(source).toLowerCase()];
+    if (!type) {
+      throw new CliError(
+        `${source}: upload ${what} files.`,
+        EXIT.USAGE,
+        'invalid_file'
+      );
+    }
+    let bytes: Uint8Array<ArrayBuffer>;
+    try {
+      bytes = new Uint8Array(await readFile(source));
+    } catch {
+      throw new CliError(`Can't read ${source}`, EXIT.USAGE, 'invalid_file');
+    }
+    return this.json<MediaUpload>(path, {
+      method: 'POST',
+      body: bytes,
+      headers: {
+        'Content-Type': type,
+        'Content-Length': String(bytes.byteLength),
+        'X-File-Name': encodeURIComponent(basename(source)),
+      },
+    });
+  }
+
   generate(input: GenerationInput) {
     return this.json<Generation>('/generations', {
       method: 'POST',
@@ -306,6 +527,33 @@ export class Api {
     return this.json<Generation>(`/generations/${encodeURIComponent(id)}`, {
       query: { wait: waitSeconds || undefined },
     });
+  }
+
+  /** Run one prompt on 2-4 image models at once. */
+  compare(input: CompareInput) {
+    return this.json<Comparison>('/generations/compare', {
+      method: 'POST',
+      json: input,
+    });
+  }
+
+  /** Delete a finished or failed generation and its files. */
+  deleteGeneration(id: string) {
+    return this.json<{ id: string; deleted: true }>(
+      `/generations/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    );
+  }
+
+  feedback(input: FeedbackInput) {
+    return this.json<{ received: true }>('/feedback', {
+      method: 'POST',
+      json: input,
+    });
+  }
+
+  purchaseLink() {
+    return this.json<PurchaseLink>('/credits/purchase-link');
   }
 
   async list(query: { limit?: number; before?: string }) {

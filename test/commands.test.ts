@@ -349,10 +349,10 @@ test('`makemidas estimate video` exits 0 when not affordable', async () => {
   );
 });
 
-test('`makemidas estimate` needs image or video', async () => {
+test('`makemidas estimate` needs a command to price', async () => {
   const result = await run(['estimate', 'a fox', '--base-url', 'http://127.0.0.1:9']);
   assert.equal(result.code, EXIT.USAGE);
-  assert.match(result.stderr, /estimate image/);
+  assert.match(result.stderr, /estimate <command>/);
 });
 
 test('`makemidas models <id>` fetches one model; image|video still filter', async () => {

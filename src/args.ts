@@ -203,7 +203,8 @@ export function audioInput(
   if (task !== 'music') others.push(...MUSIC_OPTIONS);
   if (task !== 'sfx') others.push(...SFX_OPTIONS);
   if (task !== 'speech') others.push(...SPEECH_OPTIONS);
-  if (task === 'speech') others.push('duration');
+  // Only music models list track lengths; sound effects set their own.
+  if (task !== 'music') others.push('duration');
   refuse(v, others, command);
   const input: GenerationInput = {
     kind: 'audio',
@@ -220,7 +221,7 @@ export function audioInput(
       throw usageError('--lyrics and --instrumental do not go together.');
     }
   }
-  if (task !== 'speech') {
+  if (task === 'music') {
     const seconds = intOption(v.duration, 'duration', 1, 240);
     if (seconds) input.durationSeconds = seconds;
   }

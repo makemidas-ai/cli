@@ -63,8 +63,8 @@ Generation options (image, video, estimate):
   --quoted-credits <n>    Refuse to charge anything else
   --max-credits <n>       Price it first, stop if it costs more, else run it
                           at exactly the quoted price (every generating command)
-  -d, --duration <s>      video: seconds; music, sfx: track length (models
-                          that list durations)
+  -d, --duration <s>      video: seconds; music: track length (models that
+                          list durations)
   --audio                 video: with sound (models that support it)
   --frame-mode <mode>     video: none | first | first_last | reference
   --no-wait               Print the id and exit instead of waiting (everything

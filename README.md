@@ -30,7 +30,7 @@ makemidas transcribe interview.m4a --format srt
 | `image "<prompt>"` | Generate 1–4 images and save them (`./makemidas-<id>-<n>.png`) |
 | `video "<prompt>"` | Generate a clip, wait for it and save it |
 | `music "<prompt>"` | Generate a song or track (`--lyrics`, `--title`, `--instrumental`, `--duration`) |
-| `sfx "<prompt>"` | Generate a sound effect (`--loop`, `--bpm`, `--duration`) |
+| `sfx "<prompt>"` | Generate a sound effect (`--loop`, `--bpm`; the model sets the length) |
 | `speech "<text>"` (alias `voiceover`) | Turn text into a voiceover (`--voice`; `--delivery` on Gemini TTS, `--speed`/`--stability` on ElevenLabs) |
 | `transcribe <file\|url\|fileId>` | Upload audio or video, transcribe it and save the transcript (`--format txt\|srt\|vtt\|json`, `--title`) |
 | `remove-bg <image>` | Remove the background; saves a transparent WebP |
@@ -96,9 +96,10 @@ refunded), 6 network or server error, 7 still rendering.
 
 ## Credits
 
-Every generation spends credits at the same prices as the website. Free
-accounts get 10 credits a day, the free models and watermarked images; videos
-need a plan or a credit pack. `makemidas models` shows the prices;
+Every generation spends credits at the same prices as the website. There
+are no free credits: credits come from a monthly plan or a one-time credit
+pack (`makemidas credits buy` prints the links and prices). `makemidas
+models` shows the prices;
 `--quoted-credits <n>` refuses to charge anything else.
 
 Check a price before spending, with the same options as the real command

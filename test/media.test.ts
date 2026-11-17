@@ -120,6 +120,10 @@ test('audio options are checked against the task', () => {
     usage
   );
   assert.throws(
+    () => audioInput('sfx', 'x', parse(['-d', '5']).values),
+    (e: unknown) => usage(e) && /--duration is not for `sfx`/.test((e as Error).message)
+  );
+  assert.throws(
     () => audioInput('music', 'x', parse(['--ref', 'a.png']).values),
     usage
   );
@@ -1132,6 +1136,27 @@ test('`makemidas estimate` prices audio, transcripts and edits', async () => {
         fileId: FILE_ID,
       });
       assert.equal(seen.length, 4);
+    }
+  );
+});
+
+test('`makemidas credits` without a plan points to plans and packs', async () => {
+  await withServer(
+    () =>
+      json(200, {
+        balance: 0,
+        expiring: [],
+        plan: null,
+        paid: false,
+        watermarked: true,
+        concurrency: 1,
+        maxOutputs: 1,
+      }),
+    async (baseUrl) => {
+      const result = await run(['credits', '--base-url', baseUrl]);
+      assert.equal(result.code, 0, result.stderr);
+      assert.match(result.stdout, /credits come from a plan or a credit pack/);
+      assert.doesNotMatch(result.stdout, /a day/);
     }
   );
 });

@@ -176,7 +176,7 @@ function report(
     if (files.length) for (const file of files) print(file);
     else for (const link of links) print(link);
     log(
-      `${generation.kind} ${generation.id}: ${generation.status}, ${generation.credits} credits${generation.watermarked ? ' (watermarked: free plan)' : ''}.`
+      `${generation.kind} ${generation.id}: ${generation.status}, ${generation.credits} credits${generation.watermarked ? ' (watermarked: no plan or credit pack)' : ''}.`
     );
   }
   if (generation.status === 'failed') {
@@ -488,7 +488,9 @@ export async function credits(api: Api, g: Globals): Promise<void> {
   }
   print(`${result.balance} credits (plan: ${result.plan ?? 'free'}).`);
   if (result.watermarked) {
-    print('Free plan: 10 credits a day, free models only, watermarked images.');
+    print(
+      'No plan or credit pack yet: credits come from a plan or a credit pack (`makemidas credits buy`).'
+    );
   } else {
     print(`Up to ${result.concurrency} at once, ${result.maxOutputs} outputs each.`);
   }

@@ -202,6 +202,12 @@ export interface GenerationInput {
   language?: string;
   /** Image upscale: 1, 2, 4 or 8. */
   upscaleFactor?: number;
+  /** Images and videos: a saved brand's id; its guidelines join the prompt. */
+  brandId?: string;
+  /** With brandId, images: also send the brand's first logo. */
+  brandLogo?: boolean;
+  /** Images and videos: a saved character's id; its pictures are references. */
+  characterId?: string;
   quotedCredits?: number;
 }
 
@@ -392,6 +398,41 @@ export interface FilmUpdate {
   shots?: FilmShotInput[];
 }
 
+export interface Brand {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  colors: { name?: string; hex: string; role: string }[];
+  fonts: { name: string; role: string }[];
+  tone: string | null;
+  dos: string | null;
+  donts: string | null;
+  logos: { id: string }[];
+  styleImages: { id: string }[];
+  /** The brand as prompt text: what the server adds for it. */
+  guidelines: string;
+}
+
+export interface Character {
+  id: string;
+  name: string;
+  description: string | null;
+  imageCount: number;
+}
+
+export interface Asset {
+  id: string;
+  kind: 'image' | 'video' | 'audio';
+  name: string;
+  tags: string[];
+  contentType: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+  durationSeconds: number | null;
+  createdAt: string;
+}
+
 export type MediaUploadKind = 'audio' | 'video';
 
 interface RequestOptions {
@@ -553,8 +594,38 @@ export class Api {
     return this.json<ModelDetails>(`/models/${encodeURIComponent(id)}`);
   }
 
-  /** Upload a local image (or one downloaded from a URL) as a reference. */
+  async brands(): Promise<Brand[]> {
+    return (await this.json<{ brands: Brand[] }>('/brands')).brands;
+  }
+
+  /** One brand; `default` is the default brand (or the only one). */
+  brand(id: string) {
+    return this.json<Brand>(`/brands/${encodeURIComponent(id)}`);
+  }
+
+  async characters(): Promise<Character[]> {
+    return (await this.json<{ characters: Character[] }>('/characters')).characters;
+  }
+
+  /** A page of the asset library, newest first. */
+  assets(query: { q?: string; kind?: string; limit?: number }) {
+    return this.json<{ assets: Asset[]; nextCursor: string | null }>('/assets', {
+      query,
+    });
+  }
+
+  /**
+   * Upload a local image (or one downloaded from a URL) as a reference;
+   * `asset:<id>` uses a file from the asset library.
+   */
   async upload(source: string): Promise<string> {
+    if (source.startsWith('asset:')) {
+      const { id } = await this.json<{ id: string }>('/uploads', {
+        method: 'POST',
+        json: { assetId: source.slice('asset:'.length) },
+      });
+      return id;
+    }
     let bytes: Uint8Array<ArrayBuffer>;
     let type: string | undefined;
     let name: string;

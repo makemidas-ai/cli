@@ -38,6 +38,7 @@ makemidas transcribe interview.m4a --format srt
 | `upscale-video <video> [--resolution 1080P\|2K\|4K]` | Upscale an MP4 or MOV clip of up to 60 s (default 2K) |
 | `compare "<prompt>" --models a,b[,c,d]` | One prompt on 2–4 image models, one image each |
 | `film new "<brief>"`, `film get/approve/redo/download …` | Film projects: script and storyboard, approved frames and clips, an assembled film ([below](#film-projects)) |
+| `brands [<id>\|default]`, `characters`, `assets [--q] [--kind]` | Saved brands (with their guidelines), characters and asset-library files to build on |
 | `get <id> [--wait]` | Fetch a generation and save its files |
 | `list [--limit n] [--before t]` | Recent generations |
 | `delete <id> [--yes]` | Delete a finished or failed generation and its files (no refund) |
@@ -94,6 +95,24 @@ Exit codes: 0 ok, 2 bad input (including `delete` without `--yes` when
 stdin is not a terminal), 3 not signed in, 4 not enough credits, a plan
 limit or busy (also over `--max-credits`), 5 generation failed (credits
 refunded), 6 network or server error, 7 still rendering.
+
+## Brands, characters and the asset library
+
+Images and videos can follow a saved brand and reuse saved characters and
+library files:
+
+```bash
+makemidas brands default                       # the brand's look and tone as text
+makemidas image "our cold brew on a desk" --brand default --brand-logo
+makemidas video "she waves at the camera" --character <id> -d 5
+makemidas assets --q "product shot" --kind image
+makemidas image "the same bottle on a beach" --ref asset:<id>
+```
+
+`--brand <id|default>` adds the brand's guidelines to the prompt (and, for
+images, its style pictures as references; `--brand-logo` also sends its
+logo). `--character <id>` sends the character's pictures as references.
+`--ref asset:<id>` uses a file from the asset library like a local one.
 
 ## Film projects
 

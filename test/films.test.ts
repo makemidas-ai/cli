@@ -294,3 +294,42 @@ test('film settings come from flags; none and default clear a choice', () => {
   });
   assert.throws(() => filmSettings(parse(['--transition', 'wipe']).values));
 });
+
+test('brand, character and asset references reach the request', async () => {
+  const { api, calls } = fake({
+    'GET /brands/default': () => ({ id: 'b-1', name: 'Ember', isDefault: true }),
+    'POST /uploads': () => ({ id: 'ref-1' }),
+    'POST /generations/estimate': (body) => ({
+      credits: 5,
+      listCredits: 5,
+      discount: 0,
+      balance: 100,
+      affordable: true,
+      model: 'x',
+      request: body,
+    }),
+  });
+  const { values } = parse([
+    'image',
+    'a cup',
+    '--brand',
+    'default',
+    '--brand-logo',
+    '--character',
+    '22222222-2222-2222-2222-222222222222',
+  ]);
+  const { generationInput } = await import('../src/args.ts');
+  const commands = await import('../src/commands.ts');
+  await quiet(() =>
+    commands.estimate(api, g, generationInput('image', 'a cup', values), ['asset:33333333-3333-3333-3333-333333333333'])
+  );
+  assert.deepEqual(calls.find((c) => c.key === 'POST /uploads')?.body, {
+    assetId: '33333333-3333-3333-3333-333333333333',
+  });
+  const sent = calls.find((c) => c.key === 'POST /generations/estimate')?.body as Record<string, unknown>;
+  assert.equal(sent.brandId, 'b-1');
+  assert.equal(sent.brandLogo, true);
+  assert.equal(sent.characterId, '22222222-2222-2222-2222-222222222222');
+  assert.deepEqual(sent.referenceIds, ['ref-1']);
+  assert.throws(() => generationInput('video', 'x', parse(['--brand-logo']).values));
+});

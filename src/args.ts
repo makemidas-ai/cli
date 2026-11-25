@@ -74,6 +74,9 @@ export function parse(argv: string[]) {
         'no-write': { type: 'boolean', default: false },
         file: { type: 'string' },
         pieces: { type: 'boolean', default: false },
+        character: { type: 'string' },
+        'brand-logo': { type: 'boolean', default: false },
+        q: { type: 'string' },
       },
     });
   } catch (error) {
@@ -140,6 +143,9 @@ const VISUAL_OPTIONS = [
   'ref',
   'frame-mode',
   'audio',
+  'brand',
+  'brand-logo',
+  'character',
 ];
 const MUSIC_OPTIONS = ['lyrics', 'title', 'instrumental'];
 const SFX_OPTIONS = ['loop', 'bpm'];
@@ -174,7 +180,15 @@ export function generationInput(
     ...(v.resolution ? { resolution: v.resolution } : {}),
     ...(v.style ? { style: v.style } : {}),
     ...(v.enhance ? { enhance: true } : {}),
+    ...(v.brand ? { brandId: v.brand } : {}),
+    ...(v.character ? { characterId: v.character } : {}),
   };
+  if (v['brand-logo']) {
+    if (kind !== 'image' || !v.brand) {
+      throw usageError('--brand-logo goes with --brand on images.');
+    }
+    input.brandLogo = true;
+  }
   const count = intOption(v.count, 'count', 1, 4);
   if (count) input.count = count;
   const quoted = quotedCredits(v);

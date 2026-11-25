@@ -42,6 +42,10 @@ Usage:
   makemidas get <id>                    Fetch a generation (and save its files)
   makemidas list                        Recent generations
   makemidas delete <id> [--yes]         Delete a generation and its files
+  makemidas brands [<id>|default]       Saved brands, or one brand's guidelines
+  makemidas characters                  Saved characters
+  makemidas assets [--q words] [--kind image|video|audio]
+                                        Files in the asset library
   makemidas credits                     Credit balance and plan
   makemidas credits buy                 Links and prices for plans and credit packs
   makemidas estimate <command> "<prompt>|<file>"
@@ -80,10 +84,14 @@ Generation options (image, video, estimate):
   -a, --aspect <ratio>    e.g. 1:1, 16:9, 9:16
   -r, --resolution <r>    image: 1K | 2K | 4K; video: 480p | 720p | 1080p
   -n, --count <n>         Outputs, 1-4 (default 1)
-  --ref <file|url>        Reference image; repeat for more. For videos: one is
+  --ref <file|url|asset:<id>>
+                          Reference image; repeat for more. For videos: one is
                           the first frame, two are first and last frame
   --style <id>            photo, cinematic, film, anime, …
   --enhance               Let MakeMidas expand a short prompt
+  --brand <id>            A saved brand: its look and tone join the prompt
+                          (\`makemidas brands\`); --brand-logo also sends its logo
+  --character <id>        A saved character as the reference (\`makemidas characters\`)
   --quoted-credits <n>    Refuse to charge anything else
   --max-credits <n>       Price it first, stop if it costs more, else run it
                           at exactly the quoted price (every generating command)
@@ -310,6 +318,17 @@ async function main(argv: string[]): Promise<void> {
       return commands.list(api, g, {
         limit: intOption(v.limit, 'limit', 1, 50) ?? 20,
         before: v.before,
+      });
+    case 'brands':
+    case 'brand':
+      return commands.brands(api, g, rest[0]);
+    case 'characters':
+      return commands.characters(api, g);
+    case 'assets':
+      return commands.assets(api, g, {
+        q: v.q ?? (rest.join(' ') || undefined),
+        kind: v.kind,
+        limit: intOption(v.limit, 'limit', 1, 60) ?? 20,
       });
     case 'credits': {
       const [sub] = rest;

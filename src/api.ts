@@ -202,6 +202,12 @@ export interface GenerationInput {
   language?: string;
   /** Image upscale: 1, 2, 4 or 8. */
   upscaleFactor?: number;
+  /** Images and videos: a saved brand's id; its guidelines join the prompt. */
+  brandId?: string;
+  /** With brandId, images: also send the brand's first logo. */
+  brandLogo?: boolean;
+  /** Images and videos: a saved character's id; its pictures are references. */
+  characterId?: string;
   quotedCredits?: number;
 }
 
@@ -269,6 +275,162 @@ export interface PurchaseLink {
     subscriberCredits: number;
     popular: boolean;
   }[];
+}
+
+// ---------------------------------------------------------------- films
+
+export type FilmStage = 'draft' | 'storyboard' | 'frames' | 'film' | 'assembled';
+export type FilmNext =
+  | 'write_storyboard'
+  | 'approve_frames'
+  | 'making_frames'
+  | 'approve_film'
+  | 'making_film'
+  | 'assemble'
+  | 'assembling'
+  | 'done'
+  | 'paused';
+export type FilmPart = 'frame' | 'clip' | 'voice';
+
+export interface FilmPiece {
+  generationId: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  /** Signed for an hour; get the project again for fresh links. */
+  url?: string;
+  error?: string;
+}
+
+export interface FilmShot {
+  id: string;
+  position: number;
+  description: string;
+  prompt: string;
+  camera: string | null;
+  duration: number;
+  characterId: string | null;
+  voiceover: string | null;
+  assetIds: string[];
+  error: string | null;
+  frame: FilmPiece | null;
+  clip: FilmPiece | null;
+  voice: FilmPiece | null;
+  /** Credits each step costs at today's prices. */
+  credits: { frame: number; clip: number; voice: number };
+}
+
+export interface FilmSettings {
+  aspectRatio: string;
+  videoModel: string;
+  resolution: string;
+  frameModel: string;
+  clipAudio: boolean;
+  speechModel: string;
+  voice: string | null;
+  musicModel: string | null;
+  musicPrompt: string | null;
+  textModel: string;
+  brandId: string | null;
+  characterIds: string[];
+  transition: 'cut' | 'fade' | 'crossfade';
+}
+
+export interface FilmTimeline {
+  aspectRatio: string;
+  resolution: string;
+  transition: string;
+  seconds: number;
+  clips: { shotId: string; start: number; duration: number; url: string }[];
+  voiceover: { shotId: string; start: number; url: string }[];
+  music: { url: string } | null;
+  howTo: string;
+}
+
+/** `GET /films/{id}`: a film project with signed links to its pieces. */
+export interface Film {
+  id: string;
+  title: string;
+  brief: string;
+  stage: FilmStage;
+  settings: FilmSettings;
+  script: string | null;
+  pausedReason: string | null;
+  shots: FilmShot[];
+  music: FilmPiece | null;
+  assembly: FilmPiece | null;
+  /** Credits the next approval asks for (frames or film), 0 when none. */
+  pendingCredits: number;
+  next: FilmNext;
+  seconds: number;
+  /** The assembled film, signed for an hour. */
+  filmUrl: string | null;
+  /** Once every clip is made: everything needed to assemble it yourself. */
+  timeline: FilmTimeline | null;
+  webUrl: string;
+}
+
+export interface FilmSummary {
+  id: string;
+  title: string;
+  stage: FilmStage;
+  shots: number;
+  seconds: number;
+  updatedAt: string;
+  webUrl: string;
+}
+
+/** A shot as `PATCH /films/{id}` takes it; one without `id` is new. */
+export interface FilmShotInput {
+  id?: string;
+  description?: string;
+  prompt: string;
+  camera?: string | null;
+  duration: number;
+  characterId?: string | null;
+  voiceover?: string | null;
+  assetIds?: string[];
+}
+
+export interface FilmUpdate {
+  title?: string;
+  brief?: string;
+  script?: string;
+  settings?: Partial<FilmSettings>;
+  shots?: FilmShotInput[];
+}
+
+export interface Brand {
+  id: string;
+  name: string;
+  isDefault: boolean;
+  colors: { name?: string; hex: string; role: string }[];
+  fonts: { name: string; role: string }[];
+  tone: string | null;
+  dos: string | null;
+  donts: string | null;
+  logos: { id: string }[];
+  styleImages: { id: string }[];
+  /** The brand as prompt text: what the server adds for it. */
+  guidelines: string;
+}
+
+export interface Character {
+  id: string;
+  name: string;
+  description: string | null;
+  imageCount: number;
+}
+
+export interface Asset {
+  id: string;
+  kind: 'image' | 'video' | 'audio';
+  name: string;
+  tags: string[];
+  contentType: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+  durationSeconds: number | null;
+  createdAt: string;
 }
 
 export type MediaUploadKind = 'audio' | 'video';
@@ -432,8 +594,38 @@ export class Api {
     return this.json<ModelDetails>(`/models/${encodeURIComponent(id)}`);
   }
 
-  /** Upload a local image (or one downloaded from a URL) as a reference. */
+  async brands(): Promise<Brand[]> {
+    return (await this.json<{ brands: Brand[] }>('/brands')).brands;
+  }
+
+  /** One brand; `default` is the default brand (or the only one). */
+  brand(id: string) {
+    return this.json<Brand>(`/brands/${encodeURIComponent(id)}`);
+  }
+
+  async characters(): Promise<Character[]> {
+    return (await this.json<{ characters: Character[] }>('/characters')).characters;
+  }
+
+  /** A page of the asset library, newest first. */
+  assets(query: { q?: string; kind?: string; limit?: number }) {
+    return this.json<{ assets: Asset[]; nextCursor: string | null }>('/assets', {
+      query,
+    });
+  }
+
+  /**
+   * Upload a local image (or one downloaded from a URL) as a reference;
+   * `asset:<id>` uses a file from the asset library.
+   */
   async upload(source: string): Promise<string> {
+    if (source.startsWith('asset:')) {
+      const { id } = await this.json<{ id: string }>('/uploads', {
+        method: 'POST',
+        json: { assetId: source.slice('asset:'.length) },
+      });
+      return id;
+    }
     let bytes: Uint8Array<ArrayBuffer>;
     let type: string | undefined;
     let name: string;
@@ -560,6 +752,80 @@ export class Api {
     return (
       await this.json<{ generations: Generation[] }>('/generations', { query })
     ).generations;
+  }
+
+  // ---------------------------------------------------------------- films
+
+  async films(): Promise<FilmSummary[]> {
+    return (await this.json<{ films: FilmSummary[] }>('/films')).films;
+  }
+
+  film(id: string) {
+    return this.json<Film>(`/films/${encodeURIComponent(id)}`);
+  }
+
+  /** A new project from a brief; nothing is charged. */
+  createFilm(input: {
+    brief: string;
+    title?: string;
+    settings?: Partial<FilmSettings>;
+  }) {
+    return this.json<Film>('/films', { method: 'POST', json: input });
+  }
+
+  updateFilm(id: string, input: FilmUpdate) {
+    return this.json<Film>(`/films/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      json: input,
+    });
+  }
+
+  async deleteFilm(id: string): Promise<void> {
+    await this.request(`/films/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  }
+
+  /** The most writing the storyboard can cost. */
+  storyboardQuote(id: string, targetSeconds?: number) {
+    return this.json<{ credits: number; model: string }>(
+      `/films/${encodeURIComponent(id)}/storyboard`,
+      { query: { targetSeconds } }
+    );
+  }
+
+  writeStoryboard(
+    id: string,
+    input: { targetSeconds?: number; brief?: string; quotedCredits?: number }
+  ) {
+    return this.json<Film>(`/films/${encodeURIComponent(id)}/storyboard`, {
+      method: 'POST',
+      json: input,
+    });
+  }
+
+  approveFilm(id: string, input: { stage: 'frames' | 'film'; quotedCredits: number }) {
+    return this.json<Film>(`/films/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      json: input,
+    });
+  }
+
+  redoShot(id: string, shotId: string, input: { part: FilmPart; quotedCredits: number }) {
+    return this.json<Film>(
+      `/films/${encodeURIComponent(id)}/shots/${encodeURIComponent(shotId)}/redo`,
+      { method: 'POST', json: input }
+    );
+  }
+
+  resumeFilm(id: string) {
+    return this.json<Film>(`/films/${encodeURIComponent(id)}/resume`, {
+      method: 'POST',
+    });
+  }
+
+  assembleFilm(id: string) {
+    return this.json<Film>(`/films/${encodeURIComponent(id)}/assemble`, {
+      method: 'POST',
+    });
   }
 
   /** Download a signed output link. */

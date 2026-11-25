@@ -51,7 +51,7 @@ function outputPath(dir: string, generation: Generation, n: number, ext: string)
   return join(dir, `makemidas-${generation.id.slice(0, 8)}-${n}.${ext}`);
 }
 
-async function writeOutput(
+export async function writeOutput(
   file: string,
   bytes: Uint8Array,
   force: boolean
@@ -273,8 +273,12 @@ async function prepare(
 ): Promise<GenerationInput> {
   const referenceIds = await uploadRefs(api, refs);
   const fileId = media ? await uploadMedia(api, media.kind, media.source) : undefined;
+  // `--brand default` names the default brand; the API takes its id.
+  const brandId =
+    input.brandId === 'default' ? (await api.brand('default')).id : input.brandId;
   return {
     ...input,
+    ...(brandId ? { brandId } : {}),
     // Images and videos always send the list; other kinds only when given.
     ...(input.kind === 'image' || input.kind === 'video' || referenceIds.length
       ? { referenceIds }
@@ -870,4 +874,48 @@ export async function creditsLink(api: Api, g: Globals): Promise<void> {
     }
   }
   print(`Manage billing: ${result.billingUrl}`);
+}
+
+// ---------------------------------------------------------------------------
+// brands, characters, assets (read-only: what a creative brief can use)
+// ---------------------------------------------------------------------------
+
+export async function brands(api: Api, g: Globals, id?: string): Promise<void> {
+  if (id) {
+    const brand = await api.brand(id);
+    if (g.json) return printJson(brand);
+    print(`${brand.name} (${brand.id})${brand.isDefault ? ' · default' : ''}`);
+    print(brand.guidelines);
+    return;
+  }
+  const list = await api.brands();
+  if (g.json) return printJson({ brands: list });
+  if (!list.length) return print('No saved brands (add one on makemidas.com/dashboard/brands).');
+  for (const brand of list) {
+    const palette = brand.colors.map((c) => c.hex).join(' ');
+    print(`${brand.id}  ${brand.isDefault ? '*' : ' '} ${brand.name}${palette ? `  ${palette}` : ''}`);
+  }
+}
+
+export async function characters(api: Api, g: Globals): Promise<void> {
+  const list = await api.characters();
+  if (g.json) return printJson({ characters: list });
+  if (!list.length) return print('No saved characters (add one on makemidas.com/dashboard/characters).');
+  for (const c of list) {
+    print(`${c.id}  ${c.name} (${c.imageCount} image${c.imageCount === 1 ? '' : 's'})${c.description ? `: ${c.description}` : ''}`);
+  }
+}
+
+export async function assets(
+  api: Api,
+  g: Globals,
+  query: { q?: string; kind?: string; limit?: number }
+): Promise<void> {
+  const page = await api.assets(query);
+  if (g.json) return printJson(page);
+  if (!page.assets.length) return print('No matching files in the asset library.');
+  for (const a of page.assets) {
+    const size = a.width && a.height ? `${a.width}x${a.height}` : a.durationSeconds ? `${a.durationSeconds}s` : '';
+    print(`${a.id}  ${a.kind.padEnd(5)}  ${a.name}${size ? `  ${size}` : ''}${a.tags.length ? `  #${a.tags.join(' #')}` : ''}`);
+  }
 }

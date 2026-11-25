@@ -5,6 +5,8 @@ import {
   compareModels,
   compareOptions,
   editInput,
+  filmSeconds,
+  filmSettings,
   feedbackKind,
   generationInput,
   intOption,
@@ -15,6 +17,7 @@ import {
   usageError,
 } from './args.ts';
 import * as commands from './commands.ts';
+import * as films from './films.ts';
 import { resolveBaseUrl, VERSION } from './config.ts';
 import { CliError, EXIT, formatError } from './errors.ts';
 import { setQuiet } from './output.ts';
@@ -39,6 +42,10 @@ Usage:
   makemidas get <id>                    Fetch a generation (and save its files)
   makemidas list                        Recent generations
   makemidas delete <id> [--yes]         Delete a generation and its files
+  makemidas brands [<id>|default]       Saved brands, or one brand's guidelines
+  makemidas characters                  Saved characters
+  makemidas assets [--q words] [--kind image|video|audio]
+                                        Files in the asset library
   makemidas credits                     Credit balance and plan
   makemidas credits buy                 Links and prices for plans and credit packs
   makemidas estimate <command> "<prompt>|<file>"
@@ -51,15 +58,40 @@ Usage:
   makemidas feedback "<message>"        Send feedback (--kind bug|feature|praise|other,
                                         --generation <id>)
 
+Film projects (a brief → script and storyboard → frames → clips, voiceover
+and music → one film; each paid stage is approved at the credits shown):
+  makemidas film new "<brief>"          Create a project and write its storyboard
+  makemidas film list                   Your film projects
+  makemidas film get <id> [--wait]      Storyboard, progress, prices, what's next;
+                                        saves the film once assembled
+  makemidas film write <id>             Write (or rewrite) the storyboard
+  makemidas film update <id>            Change --title, --brief, settings, or the
+                                        storyboard from --file shots.json
+  makemidas film approve <id> frames|film
+                                        Approve the next stage at its price
+  makemidas film redo <id> <shot> frame|clip|voice
+                                        Make one piece of a shot again
+  makemidas film resume <id>            Carry on after a top-up
+  makemidas film assemble <id>          Assemble the film (free; it starts on its
+                                        own once every piece is made)
+  makemidas film download <id> [--pieces]
+                                        The film, or every clip, voiceover and the
+                                        music with timeline.json to cut it yourself
+  makemidas film delete <id> [--yes]    Delete the project (its generations stay)
+
 Generation options (image, video, estimate):
   -m, --model <id>        Model id from \`makemidas models\` (default: cheapest)
   -a, --aspect <ratio>    e.g. 1:1, 16:9, 9:16
   -r, --resolution <r>    image: 1K | 2K | 4K; video: 480p | 720p | 1080p
   -n, --count <n>         Outputs, 1-4 (default 1)
-  --ref <file|url>        Reference image; repeat for more. For videos: one is
+  --ref <file|url|asset:<id>>
+                          Reference image; repeat for more. For videos: one is
                           the first frame, two are first and last frame
   --style <id>            photo, cinematic, film, anime, …
   --enhance               Let MakeMidas expand a short prompt
+  --brand <id>            A saved brand: its look and tone join the prompt
+                          (\`makemidas brands\`); --brand-logo also sends its logo
+  --character <id>        A saved character as the reference (\`makemidas characters\`)
   --quoted-credits <n>    Refuse to charge anything else
   --max-credits <n>       Price it first, stop if it costs more, else run it
                           at exactly the quoted price (every generating command)
@@ -106,6 +138,22 @@ List options:
   --limit <n>             How many (default 20, max 50)
   --before <ISO time>     Older than this
 
+Film options:
+  --seconds <n>           About how long, 10-120 (default 30)
+  --title, --brief        Name it; a new brief for \`write\` or \`update\`
+  -a, --aspect <ratio>    16:9, 9:16 or 1:1
+  --text-model <id>       Writes the script (see \`makemidas models\`)
+  --video-model <id>, -r <res>, --frame-model <id>
+  --speech-model <id>, --voice <id|default>
+  --music-model <id|none>, --music-prompt <words>
+  --transition cut|fade|crossfade, --clip-audio, --brand <id|none>
+  --no-write              film new: create it without writing the storyboard
+  --file <shots.json>     film update: the whole storyboard, in order
+  --max-credits <n>       Charge the step's price only if it is at most n
+  --quoted-credits <n>    Charge exactly n (the price shown), or nothing
+  --wait, --timeout <min> Wait for the frames, the film or the assembly
+  -o, --out <dir>         Where the film (or pieces) go (default .)
+
 Global:
   --json                  Machine-readable output on stdout
   --quiet                 No progress on stderr
@@ -120,6 +168,8 @@ Examples:
   makemidas transcribe interview.m4a --format srt
   makemidas compare "a red fox in snow" --models a/one,b/two --max-credits 40
   makemidas models google/gemini-omni-flash
+  makemidas film new "A 20-second ad for our cold brew" --max-credits 40
+  makemidas film approve <id> frames --quoted-credits 10 --wait
 
 Credentials: \`auth login\`, or MAKEMIDAS_API_KEY (Settings → API keys).
 
@@ -269,6 +319,17 @@ async function main(argv: string[]): Promise<void> {
         limit: intOption(v.limit, 'limit', 1, 50) ?? 20,
         before: v.before,
       });
+    case 'brands':
+    case 'brand':
+      return commands.brands(api, g, rest[0]);
+    case 'characters':
+      return commands.characters(api, g);
+    case 'assets':
+      return commands.assets(api, g, {
+        q: v.q ?? (rest.join(' ') || undefined),
+        kind: v.kind,
+        limit: intOption(v.limit, 'limit', 1, 60) ?? 20,
+      });
     case 'credits': {
       const [sub] = rest;
       if (!sub) return commands.credits(api, g);
@@ -335,6 +396,76 @@ async function main(argv: string[]): Promise<void> {
         throw usageError(`--kind must be ${KINDS.join(', ')}.`);
       }
       return commands.models(api, g, kind as Kind | undefined);
+    }
+    case 'film':
+    case 'films': {
+      const [sub, id, ...args] = rest;
+      const price = {
+        maxCredits: maxCredits(v),
+        quotedCredits: intOption(v['quoted-credits'], 'quoted-credits', 0, 1_000_000),
+      };
+      const filmWait = { wait: v.wait, timeoutMin };
+      switch (sub) {
+        case 'list':
+        case undefined:
+          return films.filmList(api, g);
+        case 'new':
+        case 'create':
+          return films.filmNew(
+            api,
+            g,
+            {
+              brief: [id, ...args].filter(Boolean).join(' '),
+              ...(v.title ? { title: v.title } : {}),
+              settings: filmSettings(v),
+              write: !v['no-write'],
+              targetSeconds: filmSeconds(v),
+            },
+            price
+          );
+        case 'get':
+        case 'show':
+          return films.filmGet(api, g, id, save, filmWait);
+        case 'write':
+          return films.filmWrite(
+            api,
+            g,
+            id,
+            {
+              ...(filmSeconds(v) !== undefined ? { targetSeconds: filmSeconds(v) } : {}),
+              ...(v.brief ? { brief: v.brief } : {}),
+            },
+            price
+          );
+        case 'update': {
+          const settings = filmSettings(v);
+          return films.filmUpdate(api, g, id, {
+            ...(v.title ? { title: v.title } : {}),
+            ...(v.brief ? { brief: v.brief } : {}),
+            ...(Object.keys(settings).length ? { settings } : {}),
+            ...(v.file ? { shots: await films.readStoryboard(v.file) } : {}),
+          });
+        }
+        case 'approve':
+          return films.filmApprove(api, g, id, args[0], price, save, filmWait);
+        case 'redo':
+          return films.filmRedo(api, g, id, args[0], args[1], price, filmWait);
+        case 'resume':
+          return films.filmResume(api, g, id, filmWait);
+        case 'assemble':
+          return films.filmAssemble(api, g, id, save, filmWait);
+        case 'download':
+          return films.filmDownload(api, g, id, save, { pieces: v.pieces });
+        case 'delete':
+          return films.filmDelete(api, g, id, {
+            yes: v.yes,
+            interactive: Boolean(process.stdin.isTTY),
+          });
+        default:
+          throw usageError(
+            'Use `film new`, `list`, `get`, `write`, `update`, `approve`, `redo`, `resume`, `assemble`, `download` or `delete`.'
+          );
+      }
     }
     default:
       throw usageError(`Unknown command "${command}".`);

@@ -149,7 +149,24 @@ export async function waitForFilm(
   const pause = wait.sleep ?? sleep;
   const deadline = Date.now() + wait.timeoutMin * 60_000;
   let current = film;
-  while (WORKING.has(current.next) && Date.now() < deadline) {
+  let asked = false;
+  while (Date.now() < deadline) {
+    // Every piece is made: ask for the assembly (free) once, then follow it.
+    if (current.next === 'assemble' && !asked) {
+      asked = true;
+      try {
+        current = await api.assembleFilm(current.id);
+      } catch (error) {
+        // No render service: the pieces are there to cut by hand.
+        if (error instanceof CliError && error.code === 'unavailable') {
+          log(error.message);
+          return current;
+        }
+        throw error;
+      }
+      continue;
+    }
+    if (!WORKING.has(current.next)) break;
     log(`${current.next.replace('_', ' ')}… (${short(current.id)})`);
     const seconds =
       current.next === 'assembling' ? POLL_SECONDS.assembling : POLL_SECONDS.other;
@@ -173,6 +190,13 @@ function settle(film: Film, waited: boolean): void {
       `Assembly failed: ${film.assembly.error ?? 'unknown error'}. Run \`makemidas film assemble ${film.id}\` again, or \`makemidas film download ${film.id} --pieces\` to cut it yourself.`,
       EXIT.FAILED,
       'generation_failed'
+    );
+  }
+  if (waited && film.next === 'assemble') {
+    throw new CliError(
+      `Every piece is made but the film was not assembled. Run \`makemidas film assemble ${film.id} --wait\`, or \`makemidas film download ${film.id} --pieces\` to cut it yourself.`,
+      EXIT.NOT_READY,
+      'not_ready'
     );
   }
   if (waited && WORKING.has(film.next)) {

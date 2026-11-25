@@ -164,7 +164,8 @@ test('waiting polls until the film is assembled, then saves it', async () => {
   // GET answers in turn: the approval check, then two polls.
   const reads: Partial<Film>[] = [
     { stage: 'frames', next: 'approve_film', pendingCredits: 66 },
-    { stage: 'film', next: 'assembling', pendingCredits: 0, assembly: { generationId: '', status: 'running' } },
+    // Every piece is made, nothing assembling yet: the wait asks for it.
+    { stage: 'film', next: 'assemble', pendingCredits: 0 },
     {
       stage: 'assembled',
       next: 'done',
@@ -176,6 +177,8 @@ test('waiting polls until the film is assembled, then saves it', async () => {
   const { api, calls } = fake({
     [`GET /films/${ID}`]: () => film(reads.shift()),
     [`POST /films/${ID}/approve`]: () => film({ stage: 'film', next: 'making_film', pendingCredits: 0 }),
+    [`POST /films/${ID}/assemble`]: () =>
+      film({ stage: 'film', next: 'assembling', pendingCredits: 0, assembly: { generationId: '', status: 'running' } }),
   });
   const naps: number[] = [];
   const dir = await mkdtemp(join(tmpdir(), 'mm-film-'));
@@ -194,6 +197,7 @@ test('waiting polls until the film is assembled, then saves it', async () => {
     stage: 'film',
     quotedCredits: 66,
   });
+  assert.ok(calls.some((c) => c.key === `POST /films/${ID}/assemble`));
   // The clips are polled every 15 s, the assembly every 8 s (polls drive it).
   assert.deepEqual(naps, [15_000, 8_000]);
   const saved = await readFile(join(dir, `film-${ID.slice(0, 8)}.mp4`));
@@ -332,4 +336,21 @@ test('brand, character and asset references reach the request', async () => {
   assert.equal(sent.characterId, '22222222-2222-2222-2222-222222222222');
   assert.deepEqual(sent.referenceIds, ['ref-1']);
   assert.throws(() => generationInput('video', 'x', parse(['--brand-logo']).values));
+});
+
+test('without a render service the wait stops at the pieces and exits 7', async () => {
+  const { api } = fake({
+    [`GET /films/${ID}`]: () => film({ stage: 'film', next: 'assemble', pendingCredits: 0 }),
+  });
+  const real = api.fetchImpl;
+  api.fetchImpl = (async (input: string | URL | Request, init?: RequestInit) =>
+    String(input).endsWith('/assemble')
+      ? Response.json({ error: { code: 'unavailable', message: 'Assembly is not available yet.' } }, { status: 503 })
+      : real(input, init)) as typeof fetch;
+  await assert.rejects(
+    quiet(() =>
+      films.filmGet(api, g, ID, noSave, { wait: true, timeoutMin: 1, sleep: async () => {} })
+    ),
+    (e: CliError) => e.exitCode === EXIT.NOT_READY && /download .* --pieces/.test(e.message)
+  );
 });

@@ -37,6 +37,7 @@ makemidas transcribe interview.m4a --format srt
 | `upscale <image> [--scale 1\|2\|4\|8]` | Upscale an image (1 sharpens at the same size; default 2) |
 | `upscale-video <video> [--resolution 1080P\|2K\|4K]` | Upscale an MP4 or MOV clip of up to 60 s (default 2K) |
 | `compare "<prompt>" --models a,b[,c,d]` | One prompt on 2–4 image models, one image each |
+| `film new "<brief>"`, `film get/approve/redo/download …` | Film projects: script and storyboard, approved frames and clips, an assembled film ([below](#film-projects)) |
 | `get <id> [--wait]` | Fetch a generation and save its files |
 | `list [--limit n] [--before t]` | Recent generations |
 | `delete <id> [--yes]` | Delete a finished or failed generation and its files (no refund) |
@@ -93,6 +94,52 @@ Exit codes: 0 ok, 2 bad input (including `delete` without `--yes` when
 stdin is not a terminal), 3 not signed in, 4 not enough credits, a plan
 limit or busy (also over `--max-credits`), 5 generation failed (credits
 refunded), 6 network or server error, 7 still rendering.
+
+## Film projects
+
+A film project turns a brief into a short film: a text model you choose
+writes the script and a storyboard of shots, an image model draws each
+shot's first frame, a video model animates it, a voiceover model reads the
+narration and a music model scores it, and MakeMidas assembles the film.
+Each paid stage runs only at a price you approve, so an agent can show the
+price and ask before it spends.
+
+```bash
+# 1. Create it and write the storyboard (charged by the tokens it writes)
+makemidas film new "A 20-second ad for our cold brew: a sleepy office wakes up" \
+  --seconds 20 --aspect 9:16 --max-credits 40
+
+# 2. Read the storyboard, change it if you like, then approve the frames
+makemidas film get <id>
+makemidas film update <id> --file shots.json      # optional
+makemidas film approve <id> frames --quoted-credits <n> --wait
+
+# 3. Check the frames, approve the clips, voiceover and music; it assembles
+makemidas film approve <id> film --quoted-credits <n> --wait -o .
+
+# Redo one piece, or take the pieces and cut it yourself
+makemidas film redo <id> 2 clip --max-credits 40
+makemidas film download <id> --pieces -o ./cut      # clips, audio, timeline.json
+```
+
+- `approve`, `write` and `redo` need `--quoted-credits <n>` (the price `film
+  get` shows) or `--max-credits <n>`; without either they print the price
+  and exit 2. A changed price is refused (`price_changed`) and nothing is
+  charged.
+- Settings: `--text-model`, `--video-model`, `-r`, `--frame-model`,
+  `--speech-model`, `--voice`, `--music-model <id|none>`, `--music-prompt`,
+  `--transition cut|fade|crossfade`, `--clip-audio`, `--brand <id|none>`. After
+  the film is approved only the voiceover model and voice can change.
+- `--wait` follows the frames, the film and the assembly (`--timeout`,
+  default 15 minutes); it polls the assembly every 8 seconds, which keeps the
+  render moving. A paused project (out of credits) exits 4: top up, then
+  `makemidas film resume <id>`.
+- `film download --pieces` saves every clip, voiceover and the music with a
+  `timeline.json` (start, duration and local file of each piece) for your own
+  ffmpeg cut or an agent's.
+- The storyboard file for `film update --file` is a JSON list of shots (or
+  `{ "shots": [...] }`), each with `prompt` and `duration`, and optionally
+  `id` (keep a shot and its frame), `description`, `camera` and `voiceover`.
 
 ## Credits
 

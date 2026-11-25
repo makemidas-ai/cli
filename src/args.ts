@@ -2,6 +2,7 @@ import { parseArgs } from 'node:util';
 import type {
   AudioTask,
   EditTask,
+  FilmSettings,
   GenerationInput,
   TranscriptFormat,
 } from './api.ts';
@@ -59,6 +60,20 @@ export function parse(argv: string[]) {
         models: { type: 'string' },
         generation: { type: 'string' },
         yes: { type: 'boolean', short: 'y', default: false },
+        seconds: { type: 'string' },
+        brief: { type: 'string' },
+        'text-model': { type: 'string' },
+        'video-model': { type: 'string' },
+        'frame-model': { type: 'string' },
+        'speech-model': { type: 'string' },
+        'music-model': { type: 'string' },
+        'music-prompt': { type: 'string' },
+        transition: { type: 'string' },
+        brand: { type: 'string' },
+        'clip-audio': { type: 'boolean', default: false },
+        'no-write': { type: 'boolean', default: false },
+        file: { type: 'string' },
+        pieces: { type: 'boolean', default: false },
       },
     });
   } catch (error) {
@@ -383,4 +398,41 @@ export function feedbackKind(value: string | undefined): (typeof FEEDBACK_KINDS)
     throw usageError('--kind must be bug, feature, praise or other.');
   }
   return kind as (typeof FEEDBACK_KINDS)[number];
+}
+
+// ---------------------------------------------------------------- films
+
+const TRANSITIONS = ['cut', 'fade', 'crossfade'] as const;
+
+/**
+ * Film settings from the command line. `none` turns music or the brand off;
+ * a voice of `default` uses the voiceover model's own.
+ */
+export function filmSettings(v: Values): Partial<FilmSettings> {
+  const settings: Partial<FilmSettings> = {};
+  if (v.aspect) settings.aspectRatio = v.aspect;
+  if (v.resolution) settings.resolution = v.resolution;
+  if (v['text-model']) settings.textModel = v['text-model'];
+  if (v['video-model']) settings.videoModel = v['video-model'];
+  if (v['frame-model']) settings.frameModel = v['frame-model'];
+  if (v['speech-model']) settings.speechModel = v['speech-model'];
+  if (v.voice) settings.voice = v.voice === 'default' ? null : v.voice;
+  if (v['music-model']) {
+    settings.musicModel = v['music-model'] === 'none' ? null : v['music-model'];
+  }
+  if (v['music-prompt']) settings.musicPrompt = v['music-prompt'];
+  if (v.brand) settings.brandId = v.brand === 'none' ? null : v.brand;
+  if (v['clip-audio']) settings.clipAudio = true;
+  if (v.transition) {
+    if (!(TRANSITIONS as readonly string[]).includes(v.transition)) {
+      throw usageError(`--transition must be ${TRANSITIONS.join(', ')}.`);
+    }
+    settings.transition = v.transition as FilmSettings['transition'];
+  }
+  return settings;
+}
+
+/** About how long the film should be, in seconds. */
+export function filmSeconds(v: Values): number | undefined {
+  return intOption(v.seconds, 'seconds', 10, 120);
 }

@@ -51,7 +51,7 @@ function outputPath(dir: string, generation: Generation, n: number, ext: string)
   return join(dir, `makemidas-${generation.id.slice(0, 8)}-${n}.${ext}`);
 }
 
-async function writeOutput(
+export async function writeOutput(
   file: string,
   bytes: Uint8Array,
   force: boolean
